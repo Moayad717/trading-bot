@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Query
+from fastapi.responses import FileResponse
 
 from db import (
     get_all_signals,
@@ -12,6 +14,13 @@ from db import (
 )
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
+
+_HTML = os.path.join(os.path.dirname(__file__), "index.html")
+
+
+@router.get("/", include_in_schema=False)
+async def dashboard_ui() -> FileResponse:
+    return FileResponse(_HTML, media_type="text/html")
 
 
 @router.get("/signals", summary="All signals (most recent first)")
