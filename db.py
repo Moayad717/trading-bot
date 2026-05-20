@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS signals (
 def init_db_sync() -> None:
     with sqlite3.connect(settings.DB_PATH) as conn:
         conn.execute(_CREATE_TABLE)
-        for col, typedef in [("stop_loss", "REAL"), ("take_profit", "REAL")]:
+        for col, typedef in [("stop_loss", "REAL"), ("take_profit", "REAL"),
+                             ("trigger_price", "REAL"), ("pattern_type", "TEXT")]:
             try:
                 conn.execute(f"ALTER TABLE signals ADD COLUMN {col} {typedef}")
             except sqlite3.OperationalError:
@@ -52,8 +53,9 @@ async def insert_signal(signal: Signal) -> int:
             """
             INSERT INTO signals
                 (timestamp, action, symbol, quantity, price, order_type, category,
-                 status, exchange, order_id, source, error_message, stop_loss, take_profit)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 status, exchange, order_id, source, error_message, stop_loss, take_profit,
+                 trigger_price, pattern_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 signal.timestamp.isoformat(),
@@ -70,6 +72,8 @@ async def insert_signal(signal: Signal) -> int:
                 signal.error_message,
                 signal.stop_loss,
                 signal.take_profit,
+                signal.trigger_price,
+                signal.pattern_type,
             ),
         )
         await db.commit()

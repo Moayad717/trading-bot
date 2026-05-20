@@ -44,14 +44,14 @@ plot(close, title="Scale Anchor", color=color.new(color.white, 100), editable=fa
 // ============================================================================
 // 3. HELPER FUNCTIONS
 // ============================================================================
-build_payload(is_long, entry_price, tp_price) =>
+build_payload(is_long, entry_price, tp_price, ptype) =>
     string action = is_long ? "enter_long" : "enter_short"
     // Send full position value (cost × leverage) not margin cost.
     // 3Commas treats 'amount' as position value in USDT, not as margin.
     // If we sent 0.20 USDT, 3Commas would try to buy 0.020 LINK — below the 0.1 LINK minimum.
     // Sending 10 USDT (0.20 × 50) gives 1.02 LINK — above the minimum.
     float  cost   = is_long ? (input_long_cost * input_leverage) : (input_short_cost * input_leverage)
-    '{"secret": "' + input_bot_secret + '", "max_lag": "300", "timestamp": "' + str.tostring(timenow) + '", "trigger_price": "' + str.tostring(close) + '", "tv_exchange": "' + input_tv_exchange + '", "tv_instrument": "' + input_tv_instrument + '", "action": "' + action + '", "bot_uuid": "' + input_bot_uuid + '", "order": {"amount": "' + str.tostring(cost) + '", "currency_type": "quote", "order_type": "limit", "price": "' + str.tostring(entry_price, "#.#####") + '"}, "take_profit": {"enabled": true, "steps": [{"order_type": "limit", "price_percent": ' + str.tostring(is_long ? (input_target_roi / input_leverage) : -(input_target_roi / input_leverage), "#.####") + ', "volume_percent": 100}]}}'
+    '{"secret": "' + input_bot_secret + '", "max_lag": "300", "timestamp": "' + str.tostring(timenow) + '", "trigger_price": "' + str.tostring(close) + '", "tv_exchange": "' + input_tv_exchange + '", "tv_instrument": "' + input_tv_instrument + '", "action": "' + action + '", "bot_uuid": "' + input_bot_uuid + '", "order": {"amount": "' + str.tostring(cost) + '", "currency_type": "quote", "order_type": "limit", "price": "' + str.tostring(entry_price, "#.#####") + '"}, "take_profit": {"enabled": true, "steps": [{"order_type": "limit", "price_percent": ' + str.tostring(is_long ? (input_target_roi / input_leverage) : -(input_target_roi / input_leverage), "#.####") + ', "volume_percent": 100}]}, "pattern": "' + ptype + '"}'
 
 calculate_tp(is_long, entry_price) =>
     is_long ? entry_price * (1.0 + (input_target_roi / 100.0) / input_leverage) : entry_price * (1.0 - (input_target_roi / 100.0) / input_leverage)
@@ -369,7 +369,7 @@ if not na(tf_time) and tf_time != last_processed_tf_time
                         prev_last_bullish_valid_high, tf_low, na))
                     if IS_BULL
                         if not na(tp_c)
-                            alert(build_payload(true, prev_last_bullish_valid_high, tp_c), alert.freq_all)
+                            alert(build_payload(true, prev_last_bullish_valid_high, tp_c, "BULL_OB"), alert.freq_all)
 
             // Rule 2.2 Bear STD via OB
             if not na(completed_ui_lowest_low) and ob_body_bot <= completed_ui_lowest_low
@@ -384,7 +384,7 @@ if not na(tf_time) and tf_time != last_processed_tf_time
                     completed_ui_highest_high, completed_ui_lowest_low, na))
                 if not IS_BULL
                     if not na(tp_c)
-                        alert(build_payload(false, completed_ui_lowest_low, tp_c), alert.freq_all)
+                        alert(build_payload(false, completed_ui_lowest_low, tp_c, "BEAR_STD"), alert.freq_all)
 
             pending_bear_rev_level    := tf_low
             pending_bear_rev_bar      := bar_index
@@ -408,7 +408,7 @@ if not na(tf_time) and tf_time != last_processed_tf_time
                         tf_high, prev_last_bearish_valid_low, na))
                     if not IS_BULL
                         if not na(tp_c)
-                            alert(build_payload(false, prev_last_bearish_valid_low, tp_c), alert.freq_all)
+                            alert(build_payload(false, prev_last_bearish_valid_low, tp_c, "BEAR_OB"), alert.freq_all)
 
             // Rule 2.1 Bull STD via OB
             if not na(completed_li_highest_high) and ob_body_top >= completed_li_highest_high
@@ -423,7 +423,7 @@ if not na(tf_time) and tf_time != last_processed_tf_time
                     completed_li_highest_high, completed_li_lowest_low, na))
                 if IS_BULL
                     if not na(tp_c)
-                        alert(build_payload(true, completed_li_highest_high, tp_c), alert.freq_all)
+                        alert(build_payload(true, completed_li_highest_high, tp_c, "BULL_STD"), alert.freq_all)
 
             pending_bull_rev_level    := tf_high
             pending_bull_rev_bar      := bar_index
@@ -452,7 +452,7 @@ if not na(tf_time) and tf_time != last_processed_tf_time
                         pending_bull_std_box_high, pending_bull_std_box_low, na))
                     if IS_BULL
                         if not na(tp_c)
-                            alert(build_payload(true, pending_bull_std_level, tp_c), alert.freq_all)
+                            alert(build_payload(true, pending_bull_std_level, tp_c, "BULL_STD"), alert.freq_all)
                 pending_bull_std_level := na
 
     // Rule 2.2 Bear STD — body confirmation
@@ -474,7 +474,7 @@ if not na(tf_time) and tf_time != last_processed_tf_time
                         pending_bear_std_box_high, pending_bear_std_box_low, na))
                     if not IS_BULL
                         if not na(tp_c)
-                            alert(build_payload(false, pending_bear_std_level, tp_c), alert.freq_all)
+                            alert(build_payload(false, pending_bear_std_level, tp_c, "BEAR_STD"), alert.freq_all)
                 pending_bear_std_level := na
 
     // ── REV CONFIRMATIONS ─────────────────────────────────────────────────────
@@ -493,7 +493,7 @@ if not na(tf_time) and tf_time != last_processed_tf_time
                     pending_bear_rev_box_high, pending_bear_rev_box_low, na))
                 if not IS_BULL
                     if not na(tp_c)
-                        alert(build_payload(false, pending_bear_rev_level, tp_c), alert.freq_all)
+                        alert(build_payload(false, pending_bear_rev_level, tp_c, "BEAR_REV"), alert.freq_all)
             pending_bear_rev_level := na
 
     // Rule 4.5 Bull REV — body confirmation
@@ -511,7 +511,7 @@ if not na(tf_time) and tf_time != last_processed_tf_time
                     pending_bull_rev_box_high, pending_bull_rev_box_low, na))
                 if IS_BULL
                     if not na(tp_c)
-                        alert(build_payload(true, pending_bull_rev_level, tp_c), alert.freq_all)
+                        alert(build_payload(true, pending_bull_rev_level, tp_c, "BULL_REV"), alert.freq_all)
             pending_bull_rev_level := na
 
     // ── FINAL STRUCTURE UPDATE ────────────────────────────────────────────────

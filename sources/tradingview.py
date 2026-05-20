@@ -13,8 +13,10 @@ _QUANTITY_KEYS    = ("quantity", "qty", "amount", "size", "contracts")
 _PRICE_KEYS       = ("price", "limit_price", "entry_price")
 _ORDER_TYPE_KEYS  = ("order_type", "type", "ordertype", "order")
 _CATEGORY_KEYS    = ("category", "market_type", "contract_type")
-_STOP_LOSS_KEYS   = ("stop_loss", "sl", "stop", "stoploss")
-_TAKE_PROFIT_KEYS = ("take_profit", "tp", "target", "takeprofit")
+_STOP_LOSS_KEYS     = ("stop_loss", "sl", "stop", "stoploss")
+_TAKE_PROFIT_KEYS   = ("take_profit", "tp", "target", "takeprofit")
+_TRIGGER_PRICE_KEYS = ("trigger_price", "trigger")
+_PATTERN_TYPE_KEYS  = ("pattern", "pattern_type", "rule")
 
 _BUY_ALIASES  = {"buy", "long", "bull", "bullish", "1", "entry_long", "enter_long"}
 _SELL_ALIASES = {"sell", "short", "bear", "bearish", "-1", "entry_short", "enter_short"}
@@ -97,6 +99,11 @@ def parse(payload: Dict[str, Any]) -> SignalCreate:
     raw_category = _find(payload, _CATEGORY_KEYS)
     category = str(raw_category).lower() if raw_category and not isinstance(raw_category, dict) else "linear"
 
+    # Trigger price and pattern type — flat fields only
+    trigger_price = _to_float(_find(payload, _TRIGGER_PRICE_KEYS), "trigger_price")
+    raw_pattern = _find(payload, _PATTERN_TYPE_KEYS)
+    pattern_type: Optional[str] = str(raw_pattern).strip() if raw_pattern and not isinstance(raw_pattern, dict) else None
+
     # Stop loss — flat fields only
     stop_loss = _to_float(_find(payload, _STOP_LOSS_KEYS), "stop_loss")
 
@@ -131,4 +138,6 @@ def parse(payload: Dict[str, Any]) -> SignalCreate:
         source=SOURCE_NAME,
         stop_loss=stop_loss,
         take_profit=take_profit,
+        trigger_price=trigger_price,
+        pattern_type=pattern_type,
     )

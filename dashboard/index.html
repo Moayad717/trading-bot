@@ -476,10 +476,11 @@
                             <th>Time</th>
                             <th>Symbol</th>
                             <th>Action</th>
-                            <th>Qty</th>
-                            <th>Order Type</th>
-                            <th>SL</th>
+                            <th>Pattern</th>
+                            <th>Entry</th>
+                            <th>Trigger</th>
                             <th>TP</th>
+                            <th>TP%</th>
                             <th>Status</th>
                             <th>Order ID</th>
                         </tr>
@@ -502,10 +503,11 @@
                             <th>Date &amp; Time</th>
                             <th>Symbol</th>
                             <th>Action</th>
-                            <th>Qty</th>
-                            <th>Order Type</th>
-                            <th>SL</th>
+                            <th>Pattern</th>
+                            <th>Entry</th>
+                            <th>Trigger</th>
                             <th>TP</th>
+                            <th>TP%</th>
                             <th>Status</th>
                             <th>Order ID</th>
                         </tr>
@@ -561,19 +563,33 @@
             return `<span class="mono">${val}</span>`;
         }
 
+        function fmtPattern(pt) {
+            if (!pt) return '<span class="dim">—</span>';
+            return `<span class="mono dim">${pt}</span>`;
+        }
+
+        function fmtTpPercent(entry, tp) {
+            if (!entry || !tp) return '<span class="dim">—</span>';
+            const pct = ((tp / entry) - 1) * 100;
+            const sign = pct >= 0 ? '+' : '';
+            const col = pct >= 0 ? 'var(--green)' : 'var(--red)';
+            return `<span class="mono" style="color:${col}">${sign}${pct.toFixed(2)}%</span>`;
+        }
+
         function renderRows(signals, useDateTime = false) {
             if (!signals.length) {
-                return '<tr class="empty-row"><td colspan="9">No signals yet</td></tr>';
+                return '<tr class="empty-row"><td colspan="10">No signals yet</td></tr>';
             }
             return signals.map(s => `
       <tr>
         <td class="mono dim">${useDateTime ? fmtDateTime(s.timestamp) : fmtTime(s.timestamp)}</td>
         <td class="sym">${s.symbol}</td>
         <td>${badge(s.action, s.action)}</td>
-        <td class="mono">${s.quantity}</td>
-        <td class="dim">${s.order_type}</td>
-        <td>${fmtPrice(s.stop_loss)}</td>
+        <td>${fmtPattern(s.pattern_type)}</td>
+        <td>${fmtPrice(s.price)}</td>
+        <td>${fmtPrice(s.trigger_price)}</td>
         <td>${fmtPrice(s.take_profit)}</td>
+        <td>${fmtTpPercent(s.price, s.take_profit)}</td>
         <td>${badge(s.status, s.status)}</td>
         <td>${orderId(s.order_id)}</td>
       </tr>

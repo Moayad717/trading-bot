@@ -36,6 +36,8 @@ class SignalCreate(BaseModel):
     source: str = "unknown"
     stop_loss: Optional[float] = None
     take_profit: Optional[float] = None
+    trigger_price: Optional[float] = None
+    pattern_type: Optional[str] = None
 
     @field_validator("symbol")
     @classmethod
