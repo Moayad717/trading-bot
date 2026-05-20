@@ -45,11 +45,17 @@ async def tradingview_webhook(request: Request) -> Dict[str, Any]:
     except Exception:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Request body must be valid JSON")
 
+    dry_run: bool = bool(payload.get("dry_run", False))
+
     try:
         signal_create = tv_parser.parse(payload)
     except ValueError as exc:
         logger.warning("Failed to parse TradingView payload: %s | payload=%s", exc, payload)
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+
+    if dry_run:
+        logger.info("Dry run — parsed OK, no order placed: %s", signal_create.model_dump())
+        return {"dry_run": True, "parsed": signal_create.model_dump()}
 
     exchange = _get_exchange()
     signal = Signal(
