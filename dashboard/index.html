@@ -1,430 +1,594 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Trading Bot Dashboard</title>
-  <style>
-    :root {
-      --bg:       #0d0d12;
-      --surface:  #14141c;
-      --surface2: #1c1c28;
-      --border:   #252535;
-      --text:     #dddde8;
-      --muted:    #5a5a72;
-      --green:    #22c55e;
-      --red:      #ef4444;
-      --amber:    #f59e0b;
-      --indigo:   #818cf8;
-    }
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Trading Bot Dashboard</title>
+    <style>
+        :root {
+            --bg: #0d0d12;
+            --surface: #14141c;
+            --surface2: #1c1c28;
+            --border: #252535;
+            --text: #dddde8;
+            --muted: #a0a0a0;
+            --green: #22c55e;
+            --red: #ef4444;
+            --amber: #f59e0b;
+            --indigo: #818cf8;
+        }
 
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        *,
+        *::before,
+        *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
 
-    body {
-      background: var(--bg);
-      color: var(--text);
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-      font-size: 14px;
-      line-height: 1.5;
-      min-height: 100vh;
-    }
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            font-size: 14px;
+            line-height: 1.5;
+            min-height: 100vh;
+        }
 
-    /* ── Header ─────────────────────────────────────── */
-    header {
-      position: sticky;
-      top: 0;
-      z-index: 10;
-      background: var(--surface);
-      border-bottom: 1px solid var(--border);
-      padding: 0.85rem 2rem;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
+        /* ── Header ─────────────────────────────────────── */
+        header {
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            padding: 0.85rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
 
-    .logo {
-      font-size: 1rem;
-      font-weight: 700;
-      letter-spacing: -0.02em;
-      color: var(--text);
-    }
+        .logo {
+            font-size: 1rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            color: var(--text);
+        }
 
-    .logo span { color: var(--indigo); }
+        .logo span {
+            color: var(--indigo);
+        }
 
-    .header-meta {
-      display: flex;
-      align-items: center;
-      gap: 1.25rem;
-      font-size: 0.78rem;
-      color: var(--muted);
-    }
+        .header-meta {
+            display: flex;
+            align-items: center;
+            gap: 1.25rem;
+            font-size: 0.78rem;
+            color: var(--muted);
+        }
 
-    .status-dot {
-      display: inline-block;
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      background: var(--green);
-      margin-right: 5px;
-      vertical-align: middle;
-      transition: background 0.3s;
-    }
-    .status-dot.loading { background: var(--amber); animation: blink 0.9s infinite; }
-    .status-dot.error   { background: var(--red); }
+        .status-dot {
+            display: inline-block;
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: var(--green);
+            margin-right: 5px;
+            vertical-align: middle;
+            transition: background 0.3s;
+        }
 
-    @keyframes blink {
-      0%, 100% { opacity: 1; }
-      50%       { opacity: 0.25; }
-    }
+        .status-dot.loading {
+            background: var(--amber);
+            animation: blink 0.9s infinite;
+        }
 
-    /* ── Layout ──────────────────────────────────────── */
-    main {
-      max-width: 1360px;
-      margin: 0 auto;
-      padding: 1.75rem 2rem 3rem;
-    }
+        .status-dot.error {
+            background: var(--red);
+        }
 
-    /* ── Stat Cards ──────────────────────────────────── */
-    .cards {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-      gap: 1rem;
-      margin-bottom: 2rem;
-    }
+        @keyframes blink {
 
-    .card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 1.1rem 1.25rem 1.25rem;
-    }
+            0%,
+            100% {
+                opacity: 1;
+            }
 
-    .card-label {
-      font-size: 0.7rem;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.07em;
-      color: var(--muted);
-      margin-bottom: 0.5rem;
-    }
+            50% {
+                opacity: 0.25;
+            }
+        }
 
-    .card-value {
-      font-size: 2.1rem;
-      font-weight: 800;
-      letter-spacing: -0.03em;
-      line-height: 1;
-    }
+        /* ── Layout ──────────────────────────────────────── */
+        main {
+            max-width: 1360px;
+            margin: 0 auto;
+            padding: 1.75rem 2rem 3rem;
+        }
 
-    .card-value.green  { color: var(--green); }
-    .card-value.red    { color: var(--red); }
-    .card-value.indigo { color: var(--indigo); }
+        /* ── Stat Cards ──────────────────────────────────── */
+        .cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
 
-    /* ── Section panels ──────────────────────────────── */
-    .panel {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      margin-bottom: 1.5rem;
-      overflow: hidden;
-    }
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 1.1rem 1.25rem 1.25rem;
+        }
 
-    .panel-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 0.9rem 1.25rem;
-      border-bottom: 1px solid var(--border);
-    }
+        .card-label {
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.07em;
+            color: var(--muted);
+            margin-bottom: 0.5rem;
+        }
 
-    .panel-title {
-      font-weight: 600;
-      font-size: 0.88rem;
-    }
+        .card-value {
+            font-size: 2.1rem;
+            font-weight: 800;
+            letter-spacing: -0.03em;
+            line-height: 1;
+        }
 
-    .pill {
-      background: var(--surface2);
-      border: 1px solid var(--border);
-      border-radius: 20px;
-      padding: 0.15rem 0.65rem;
-      font-size: 0.72rem;
-      color: var(--muted);
-    }
+        .card-value.green {
+            color: var(--green);
+        }
 
-    /* ── Tables ──────────────────────────────────────── */
-    .table-wrap { overflow-x: auto; }
+        .card-value.red {
+            color: var(--red);
+        }
 
-    table {
-      width: 100%;
-      border-collapse: collapse;
-    }
+        .card-value.indigo {
+            color: var(--indigo);
+        }
 
-    thead th {
-      padding: 0.65rem 1.25rem;
-      text-align: left;
-      font-size: 0.68rem;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.07em;
-      color: var(--muted);
-      border-bottom: 1px solid var(--border);
-      white-space: nowrap;
-    }
+        /* ── Section panels ──────────────────────────────── */
+        .panel {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            margin-bottom: 1.5rem;
+            overflow: hidden;
+        }
 
-    tbody td {
-      padding: 0.75rem 1.25rem;
-      border-bottom: 1px solid var(--border);
-      vertical-align: middle;
-    }
+        .panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.9rem 1.25rem;
+            border-bottom: 1px solid var(--border);
+        }
 
-    tbody tr:last-child td { border-bottom: none; }
-    tbody tr:hover { background: var(--surface2); }
+        .panel-title {
+            font-weight: 600;
+            font-size: 0.88rem;
+        }
 
-    .empty-row td {
-      text-align: center;
-      color: var(--muted);
-      padding: 2.5rem;
-      font-size: 0.85rem;
-    }
+        .pill {
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            padding: 0.15rem 0.65rem;
+            font-size: 0.72rem;
+            color: var(--muted);
+        }
 
-    /* ── Badges ──────────────────────────────────────── */
-    .badge {
-      display: inline-block;
-      padding: 0.18rem 0.52rem;
-      border-radius: 5px;
-      font-size: 0.68rem;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-      line-height: 1.4;
-    }
+        /* ── Tables ──────────────────────────────────────── */
+        .table-wrap {
+            overflow-x: auto;
+            overflow-y: auto;
+            max-height: 480px;
+        }
 
-    .badge-buy     { background: rgba(34,197,94,0.12);  color: var(--green); }
-    .badge-sell    { background: rgba(239,68,68,0.12);   color: var(--red); }
-    .badge-filled  { background: rgba(34,197,94,0.12);  color: var(--green); }
-    .badge-failed  { background: rgba(239,68,68,0.12);   color: var(--red); }
-    .badge-pending { background: rgba(245,158,11,0.12);  color: var(--amber); }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
 
-    /* ── Mono / utility ──────────────────────────────── */
-    .mono {
-      font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
-      font-size: 0.8rem;
-    }
+        thead th {
+            position: sticky;
+            top: 0;
+            z-index: 1;
+            background: var(--surface);
+            padding: 0.65rem 1.25rem;
+            text-align: left;
+            font-size: 0.68rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.07em;
+            color: var(--muted);
+            border-bottom: 1px solid var(--border);
+            white-space: nowrap;
+        }
 
-    .sym { font-weight: 700; font-size: 0.88rem; }
+        tbody td {
+            padding: 0.75rem 1.25rem;
+            border-bottom: 1px solid var(--border);
+            vertical-align: middle;
+        }
 
-    .order-id {
-      display: inline-block;
-      max-width: 130px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      vertical-align: bottom;
-      cursor: default;
-    }
+        tbody tr:last-child td {
+            border-bottom: none;
+        }
 
-    .dim { color: var(--muted); }
+        tbody tr:hover {
+            background: var(--surface2);
+        }
 
-    /* ── Daily report breakdown ──────────────────────── */
-    .breakdown-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-      gap: 1rem;
-      padding: 1.25rem;
-    }
+        .empty-row td {
+            text-align: center;
+            color: var(--muted);
+            padding: 2.5rem;
+            font-size: 0.85rem;
+        }
 
-    .bk-card {
-      background: var(--surface2);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 1rem 1.1rem;
-    }
+        /* ── Badges ──────────────────────────────────────── */
+        .badge {
+            display: inline-block;
+            padding: 0.18rem 0.52rem;
+            border-radius: 5px;
+            font-size: 0.68rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            line-height: 1.4;
+        }
 
-    .bk-symbol {
-      font-weight: 800;
-      font-size: 1rem;
-      letter-spacing: -0.01em;
-      margin-bottom: 0.6rem;
-    }
+        .badge-buy {
+            background: rgba(34, 197, 94, 0.12);
+            color: var(--green);
+        }
 
-    .bk-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 0.35rem;
-      font-size: 0.8rem;
-    }
+        .badge-sell {
+            background: rgba(239, 68, 68, 0.12);
+            color: var(--red);
+        }
 
-    .bk-row .dim { font-size: 0.75rem; }
+        .badge-filled {
+            background: rgba(34, 197, 94, 0.12);
+            color: var(--green);
+        }
 
-    .bk-notional {
-      margin-top: 0.5rem;
-      padding-top: 0.5rem;
-      border-top: 1px solid var(--border);
-      font-size: 0.78rem;
-      color: var(--muted);
-      display: flex;
-      justify-content: space-between;
-    }
+        .badge-failed {
+            background: rgba(239, 68, 68, 0.12);
+            color: var(--red);
+        }
 
-    .bk-notional span:last-child { color: var(--text); font-weight: 600; }
-  </style>
+        .badge-pending {
+            background: rgba(245, 158, 11, 0.12);
+            color: var(--amber);
+        }
+
+        /* ── Mono / utility ──────────────────────────────── */
+        .mono {
+            font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+            font-size: 0.8rem;
+        }
+
+        .sym {
+            font-weight: 700;
+            font-size: 0.88rem;
+        }
+
+        .order-id {
+            display: inline-block;
+            max-width: 130px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            vertical-align: bottom;
+            cursor: default;
+        }
+
+        .dim {
+            color: var(--muted);
+        }
+
+        /* ── Daily report breakdown ──────────────────────── */
+        .breakdown-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+            gap: 1rem;
+            padding: 1.25rem;
+        }
+
+        .bk-card {
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem 1.1rem;
+        }
+
+        .bk-symbol {
+            font-weight: 800;
+            font-size: 1rem;
+            letter-spacing: -0.01em;
+            margin-bottom: 0.6rem;
+        }
+
+        .bk-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.35rem;
+            font-size: 0.8rem;
+        }
+
+        .bk-row .dim {
+            font-size: 0.75rem;
+        }
+
+        .bk-notional {
+            margin-top: 0.5rem;
+            padding-top: 0.5rem;
+            border-top: 1px solid var(--border);
+            font-size: 0.78rem;
+            color: var(--muted);
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .bk-notional span:last-child {
+            color: var(--text);
+            font-weight: 600;
+        }
+
+        /* ── Performance panel ───────────────────────────── */
+        .perf-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 0;
+        }
+
+        .perf-stat {
+            padding: 1.25rem 1.5rem;
+            border-right: 1px solid var(--border);
+        }
+
+        .perf-stat:last-child {
+            border-right: none;
+        }
+
+        .perf-label {
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.07em;
+            color: var(--muted);
+            margin-bottom: 0.4rem;
+        }
+
+        .perf-value {
+            font-size: 1.8rem;
+            font-weight: 800;
+            letter-spacing: -0.03em;
+            line-height: 1;
+        }
+
+        .perf-value.indigo {
+            color: var(--indigo);
+        }
+
+        .perf-value.green {
+            color: var(--green);
+        }
+
+        .perf-value.red {
+            color: var(--red);
+        }
+
+        .perf-sub {
+            font-size: 0.75rem;
+            color: var(--muted);
+            margin-top: 0.3rem;
+        }
+    </style>
 </head>
+
 <body>
 
-<header>
-  <div class="logo">Trading<span>Bot</span></div>
-  <div class="header-meta">
-    <span id="updated-at"><span class="status-dot loading" id="dot"></span>Loading…</span>
-    <span id="next-refresh"></span>
-  </div>
-</header>
+    <header>
+        <div class="logo">Trading<span>Bot</span></div>
+        <div class="header-meta">
+            <span id="updated-at"><span class="status-dot loading" id="dot"></span>Loading…</span>
+            <span id="next-refresh"></span>
+        </div>
+    </header>
 
-<main>
-  <!-- Stat Cards -->
-  <div class="cards">
-    <div class="card">
-      <div class="card-label">Total Signals</div>
-      <div class="card-value indigo" id="card-total">—</div>
-    </div>
-    <div class="card">
-      <div class="card-label">Today</div>
-      <div class="card-value" id="card-today">—</div>
-    </div>
-    <div class="card">
-      <div class="card-label">History</div>
-      <div class="card-value" id="card-history">—</div>
-    </div>
-    <div class="card">
-      <div class="card-label">Filled Today</div>
-      <div class="card-value green" id="card-filled">—</div>
-    </div>
-    <div class="card">
-      <div class="card-label">Failed Today</div>
-      <div class="card-value red" id="card-failed">—</div>
-    </div>
-  </div>
+    <main>
+        <!-- Stat Cards -->
+        <div class="cards">
+            <div class="card">
+                <div class="card-label">Total Signals</div>
+                <div class="card-value indigo" id="card-total">—</div>
+            </div>
+            <div class="card">
+                <div class="card-label">Today</div>
+                <div class="card-value" id="card-today">—</div>
+            </div>
+            <div class="card">
+                <div class="card-label">History</div>
+                <div class="card-value" id="card-history">—</div>
+            </div>
+            <div class="card">
+                <div class="card-label">Filled Today</div>
+                <div class="card-value green" id="card-filled">—</div>
+            </div>
+            <div class="card">
+                <div class="card-label">Failed Today</div>
+                <div class="card-value red" id="card-failed">—</div>
+            </div>
+        </div>
 
-  <!-- Today's Signals -->
-  <div class="panel">
-    <div class="panel-header">
-      <span class="panel-title">Today's Signals</span>
-      <span class="pill" id="pill-today">0</span>
-    </div>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Time</th>
-            <th>Symbol</th>
-            <th>Action</th>
-            <th>Qty</th>
-            <th>Order Type</th>
-            <th>Status</th>
-            <th>Order ID</th>
-          </tr>
-        </thead>
-        <tbody id="tbody-today"></tbody>
-      </table>
-    </div>
-  </div>
+        <!-- Performance -->
+        <div class="panel" style="margin-bottom:1.5rem">
+            <div class="panel-header">
+                <span class="panel-title">Performance</span>
+            </div>
+            <div class="perf-grid">
+                <div class="perf-stat">
+                    <div class="perf-label">Win Rate</div>
+                    <div class="perf-value indigo" id="perf-winrate">—</div>
+                    <div class="perf-sub" id="perf-ratio">— / —</div>
+                </div>
+                <div class="perf-stat">
+                    <div class="perf-label">Filled (all time)</div>
+                    <div class="perf-value green" id="perf-filled">—</div>
+                </div>
+                <div class="perf-stat">
+                    <div class="perf-label">Failed (all time)</div>
+                    <div class="perf-value red" id="perf-failed">—</div>
+                </div>
+                <div class="perf-stat">
+                    <div class="perf-label">Filled Today</div>
+                    <div class="perf-value green" id="perf-filled-today">—</div>
+                </div>
+                <div class="perf-stat">
+                    <div class="perf-label">Failed Today</div>
+                    <div class="perf-value red" id="perf-failed-today">—</div>
+                </div>
+            </div>
+        </div>
 
-  <!-- Signal History -->
-  <div class="panel">
-    <div class="panel-header">
-      <span class="panel-title">Signal History</span>
-      <span class="pill" id="pill-history">0</span>
-    </div>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Date &amp; Time</th>
-            <th>Symbol</th>
-            <th>Action</th>
-            <th>Qty</th>
-            <th>Order Type</th>
-            <th>Status</th>
-            <th>Order ID</th>
-          </tr>
-        </thead>
-        <tbody id="tbody-history"></tbody>
-      </table>
-    </div>
-  </div>
+        <!-- Today's Signals -->
+        <div class="panel">
+            <div class="panel-header">
+                <span class="panel-title">Today's Signals</span>
+                <span class="pill" id="pill-today">0</span>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Symbol</th>
+                            <th>Action</th>
+                            <th>Qty</th>
+                            <th>Order Type</th>
+                            <th>SL</th>
+                            <th>TP</th>
+                            <th>Status</th>
+                            <th>Order ID</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tbody-today"></tbody>
+                </table>
+            </div>
+        </div>
 
-  <!-- Daily Report -->
-  <div class="panel">
-    <div class="panel-header">
-      <span class="panel-title">Daily Report — <span id="report-date">today</span></span>
-      <span class="pill" id="pill-report">0 signals</span>
-    </div>
-    <div id="breakdown-container"></div>
-  </div>
-</main>
+        <!-- Signal History -->
+        <div class="panel">
+            <div class="panel-header">
+                <span class="panel-title">Signal History</span>
+                <span class="pill" id="pill-history">0</span>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Date &amp; Time</th>
+                            <th>Symbol</th>
+                            <th>Action</th>
+                            <th>Qty</th>
+                            <th>Order Type</th>
+                            <th>SL</th>
+                            <th>TP</th>
+                            <th>Status</th>
+                            <th>Order ID</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tbody-history"></tbody>
+                </table>
+            </div>
+        </div>
 
-<script>
-  const INTERVAL = 30;
-  let countdown = INTERVAL;
-  let tickTimer = null;
+        <!-- Daily Report -->
+        <div class="panel">
+            <div class="panel-header">
+                <span class="panel-title">Daily Report — <span id="report-date">today</span></span>
+                <span class="pill" id="pill-report">0 signals</span>
+            </div>
+            <div id="breakdown-container"></div>
+        </div>
+    </main>
 
-  // ── Formatters ────────────────────────────────────────────────────────────
+    <script>
+        const INTERVAL = 30;
+        let countdown = INTERVAL;
+        let tickTimer = null;
 
-  function fmtTime(ts) {
-    if (!ts) return '—';
-    const d = new Date(ts.includes('T') && !ts.endsWith('Z') ? ts + 'Z' : ts);
-    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  }
+        // ── Formatters ────────────────────────────────────────────────────────────
 
-  function fmtDateTime(ts) {
-    if (!ts) return '—';
-    const d = new Date(ts.includes('T') && !ts.endsWith('Z') ? ts + 'Z' : ts);
-    return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
-      + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  }
+        function fmtTime(ts) {
+            if (!ts) return '—';
+            const d = new Date(ts.includes('T') && !ts.endsWith('Z') ? ts + 'Z' : ts);
+            return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        }
 
-  function badge(cls, text) {
-    return `<span class="badge badge-${cls}">${text}</span>`;
-  }
+        function fmtDateTime(ts) {
+            if (!ts) return '—';
+            const d = new Date(ts.includes('T') && !ts.endsWith('Z') ? ts + 'Z' : ts);
+            return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
+                + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        }
 
-  function orderId(id) {
-    if (!id) return '<span class="dim">—</span>';
-    return `<span class="mono order-id" title="${id}">${id}</span>`;
-  }
+        function badge(cls, text) {
+            return `<span class="badge badge-${cls}">${text}</span>`;
+        }
 
-  // ── Renderers ─────────────────────────────────────────────────────────────
+        function orderId(id) {
+            if (!id) return '<span class="dim">—</span>';
+            return `<span class="mono order-id" title="${id}">${id}</span>`;
+        }
 
-  function renderRows(signals, useDateTime = false) {
-    if (!signals.length) {
-      return '<tr class="empty-row"><td colspan="7">No signals yet</td></tr>';
-    }
-    return signals.map(s => `
+        // ── Renderers ─────────────────────────────────────────────────────────────
+
+        function fmtPrice(val) {
+            if (val === null || val === undefined) return '<span class="dim">—</span>';
+            return `<span class="mono">${val}</span>`;
+        }
+
+        function renderRows(signals, useDateTime = false) {
+            if (!signals.length) {
+                return '<tr class="empty-row"><td colspan="9">No signals yet</td></tr>';
+            }
+            return signals.map(s => `
       <tr>
         <td class="mono dim">${useDateTime ? fmtDateTime(s.timestamp) : fmtTime(s.timestamp)}</td>
         <td class="sym">${s.symbol}</td>
         <td>${badge(s.action, s.action)}</td>
         <td class="mono">${s.quantity}</td>
         <td class="dim">${s.order_type}</td>
+        <td>${fmtPrice(s.stop_loss)}</td>
+        <td>${fmtPrice(s.take_profit)}</td>
         <td>${badge(s.status, s.status)}</td>
         <td>${orderId(s.order_id)}</td>
       </tr>
     `).join('');
-  }
+        }
 
-  function renderBreakdown(rows) {
-    if (!rows.length) {
-      return '<div style="padding:2rem;text-align:center;color:var(--muted);font-size:.85rem">No data for today</div>';
-    }
+        function renderBreakdown(rows) {
+            if (!rows.length) {
+                return '<div style="padding:2rem;text-align:center;color:var(--muted);font-size:.85rem">No data for today</div>';
+            }
 
-    // Group rows by symbol
-    const bySymbol = {};
-    for (const r of rows) {
-      (bySymbol[r.symbol] = bySymbol[r.symbol] || []).push(r);
-    }
+            // Group rows by symbol
+            const bySymbol = {};
+            for (const r of rows) {
+                (bySymbol[r.symbol] = bySymbol[r.symbol] || []).push(r);
+            }
 
-    return `<div class="breakdown-grid">${
-      Object.entries(bySymbol).map(([symbol, entries]) => {
-        const totalNotional = entries.reduce((s, r) => s + (r.notional || 0), 0);
-        return `
+            return `<div class="breakdown-grid">${Object.entries(bySymbol).map(([symbol, entries]) => {
+                const totalNotional = entries.reduce((s, r) => s + (r.notional || 0), 0);
+                return `
           <div class="bk-card">
             <div class="bk-symbol">${symbol}</div>
             ${entries.map(r => `
@@ -440,82 +604,92 @@
               </div>` : ''}
           </div>
         `;
-      }).join('')
-    }</div>`;
-  }
+            }).join('')
+                }</div>`;
+        }
 
-  // ── Fetch + Render ────────────────────────────────────────────────────────
+        // ── Fetch + Render ────────────────────────────────────────────────────────
 
-  async function refresh() {
-    const dot  = document.getElementById('dot');
-    const info = document.getElementById('updated-at');
-    dot.className = 'status-dot loading';
-    info.innerHTML = '<span class="status-dot loading" id="dot"></span>Updating…';
+        async function refresh() {
+            const dot = document.getElementById('dot');
+            const info = document.getElementById('updated-at');
+            dot.className = 'status-dot loading';
+            info.innerHTML = '<span class="status-dot loading" id="dot"></span>Updating…';
 
-    try {
-      const [allRes, todayRes, historyRes, reportRes] = await Promise.all([
-        fetch('/dashboard/signals'),
-        fetch('/dashboard/signals/today'),
-        fetch('/dashboard/signals/history'),
-        fetch('/dashboard/report/daily'),
-      ]);
+            try {
+                const [allRes, todayRes, historyRes, reportRes, statsRes] = await Promise.all([
+                    fetch('/dashboard/signals'),
+                    fetch('/dashboard/signals/today'),
+                    fetch('/dashboard/signals/history'),
+                    fetch('/dashboard/report/daily'),
+                    fetch('/dashboard/stats'),
+                ]);
 
-      if (!allRes.ok || !todayRes.ok || !historyRes.ok || !reportRes.ok) {
-        throw new Error('One or more requests failed');
-      }
+                if (!allRes.ok || !todayRes.ok || !historyRes.ok || !reportRes.ok || !statsRes.ok) {
+                    throw new Error('One or more requests failed');
+                }
 
-      const [all, today, history, report] = await Promise.all([
-        allRes.json(), todayRes.json(), historyRes.json(), reportRes.json(),
-      ]);
+                const [all, today, history, report, stats] = await Promise.all([
+                    allRes.json(), todayRes.json(), historyRes.json(), reportRes.json(), statsRes.json(),
+                ]);
 
-      // Cards
-      document.getElementById('card-total').textContent   = all.total;
-      document.getElementById('card-today').textContent   = today.total;
-      document.getElementById('card-history').textContent = history.total;
-      document.getElementById('card-filled').textContent  = today.signals.filter(s => s.status === 'filled').length;
-      document.getElementById('card-failed').textContent  = today.signals.filter(s => s.status === 'failed').length;
+                // Performance panel
+                document.getElementById('perf-winrate').textContent = stats.win_rate + '%';
+                document.getElementById('perf-ratio').textContent = `${stats.filled} filled / ${stats.total_signals} total`;
+                document.getElementById('perf-filled').textContent = stats.filled;
+                document.getElementById('perf-failed').textContent = stats.failed;
+                document.getElementById('perf-filled-today').textContent = stats.total_filled_today;
+                document.getElementById('perf-failed-today').textContent = stats.total_failed_today;
 
-      // Today table
-      document.getElementById('pill-today').textContent   = today.total;
-      document.getElementById('tbody-today').innerHTML    = renderRows(today.signals, false);
+                // Cards
+                document.getElementById('card-total').textContent = all.total;
+                document.getElementById('card-today').textContent = today.total;
+                document.getElementById('card-history').textContent = history.total;
+                document.getElementById('card-filled').textContent = today.signals.filter(s => s.status === 'filled').length;
+                document.getElementById('card-failed').textContent = today.signals.filter(s => s.status === 'failed').length;
 
-      // History table
-      document.getElementById('pill-history').textContent  = history.total;
-      document.getElementById('tbody-history').innerHTML   = renderRows(history.signals, true);
+                // Today table
+                document.getElementById('pill-today').textContent = today.total;
+                document.getElementById('tbody-today').innerHTML = renderRows(today.signals, false);
 
-      // Daily report
-      document.getElementById('report-date').textContent        = report.date;
-      document.getElementById('pill-report').textContent        = `${report.total_signals} signal${report.total_signals !== 1 ? 's' : ''}`;
-      document.getElementById('breakdown-container').innerHTML  = renderBreakdown(report.breakdown);
+                // History table
+                document.getElementById('pill-history').textContent = history.total;
+                document.getElementById('tbody-history').innerHTML = renderRows(history.signals, true);
 
-      // Status indicator
-      const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      info.innerHTML = `<span class="status-dot" id="dot"></span>Updated ${now}`;
+                // Daily report
+                document.getElementById('report-date').textContent = report.date;
+                document.getElementById('pill-report').textContent = `${report.total_signals} signal${report.total_signals !== 1 ? 's' : ''}`;
+                document.getElementById('breakdown-container').innerHTML = renderBreakdown(report.breakdown);
 
-    } catch (err) {
-      info.innerHTML = `<span class="status-dot error" id="dot"></span>Error: ${err.message}`;
-    }
-  }
+                // Status indicator
+                const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                info.innerHTML = `<span class="status-dot" id="dot"></span>Updated ${now}`;
 
-  // ── Auto-refresh countdown ────────────────────────────────────────────────
+            } catch (err) {
+                info.innerHTML = `<span class="status-dot error" id="dot"></span>Error: ${err.message}`;
+            }
+        }
 
-  function startCountdown() {
-    clearInterval(tickTimer);
-    countdown = INTERVAL;
-    const el = document.getElementById('next-refresh');
-    tickTimer = setInterval(() => {
-      el.textContent = `Refresh in ${countdown}s`;
-      countdown--;
-      if (countdown < 0) {
-        clearInterval(tickTimer);
-        el.textContent = '';
+        // ── Auto-refresh countdown ────────────────────────────────────────────────
+
+        function startCountdown() {
+            clearInterval(tickTimer);
+            countdown = INTERVAL;
+            const el = document.getElementById('next-refresh');
+            tickTimer = setInterval(() => {
+                el.textContent = `Refresh in ${countdown}s`;
+                countdown--;
+                if (countdown < 0) {
+                    clearInterval(tickTimer);
+                    el.textContent = '';
+                    refresh().then(startCountdown);
+                }
+            }, 1000);
+        }
+
+        // Initial load
         refresh().then(startCountdown);
-      }
-    }, 1000);
-  }
-
-  // Initial load
-  refresh().then(startCountdown);
-</script>
+    </script>
 </body>
+
 </html>

@@ -6,6 +6,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
 
+from config import now_local
+
 
 class Action(str, Enum):
     BUY = "buy"
@@ -24,15 +26,15 @@ class SignalStatus(str, Enum):
 
 
 class SignalCreate(BaseModel):
-    """Normalised signal produced by a source parser before hitting an exchange."""
-
     action: Action
     symbol: str
     quantity: float
-    price: Optional[float] = None          # required for limit orders
+    price: Optional[float] = None
     order_type: OrderType = OrderType.MARKET
-    category: str = "linear"               # bybit: linear/spot/inverse
+    category: str = "linear"  # bybit: linear/spot/inverse
     source: str = "unknown"
+    stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None
 
     @field_validator("symbol")
     @classmethod
@@ -48,10 +50,8 @@ class SignalCreate(BaseModel):
 
 
 class Signal(SignalCreate):
-    """Full signal record as stored in the database."""
-
     id: Optional[int] = None
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=now_local)
     status: SignalStatus = SignalStatus.PENDING
     exchange: str = ""
     order_id: Optional[str] = None

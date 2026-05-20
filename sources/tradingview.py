@@ -1,16 +1,3 @@
-"""
-TradingView webhook payload → normalised SignalCreate.
-
-TradingView allows fully custom JSON bodies in alert messages.
-This parser accepts the most common field-name conventions and falls
-back gracefully so the exact payload format can evolve without
-touching any other module.
-
-Supported payload shapes (all fields case-insensitive):
-  { "action": "buy",  "symbol": "BTCUSDT", "qty": 0.001 }
-  { "side":   "long", "ticker": "ETHUSDT", "amount": 0.5, "price": 3000, "type": "limit" }
-  { "signal": "sell", "asset":  "SOLUSDT", "quantity": 10 }
-"""
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
@@ -19,21 +6,21 @@ from models.signal import Action, OrderType, SignalCreate
 
 SOURCE_NAME = "tradingview"
 
-# Field aliases → canonical name
-_ACTION_KEYS = ("action", "side", "signal", "direction", "type_signal")
-_SYMBOL_KEYS = ("symbol", "ticker", "asset", "instrument", "pair")
-_QUANTITY_KEYS = ("quantity", "qty", "amount", "size", "contracts")
-_PRICE_KEYS = ("price", "limit_price", "entry_price")
-_ORDER_TYPE_KEYS = ("order_type", "type", "ordertype", "order")
-_CATEGORY_KEYS = ("category", "market_type", "contract_type")
+# supported field names — TradingView alert payloads vary a lot
+_ACTION_KEYS      = ("action", "side", "signal", "direction", "type_signal")
+_SYMBOL_KEYS      = ("symbol", "ticker", "asset", "instrument", "pair", "tv_instrument")
+_QUANTITY_KEYS    = ("quantity", "qty", "amount", "size", "contracts")
+_PRICE_KEYS       = ("price", "limit_price", "entry_price")
+_ORDER_TYPE_KEYS  = ("order_type", "type", "ordertype", "order")
+_CATEGORY_KEYS    = ("category", "market_type", "contract_type")
+_STOP_LOSS_KEYS   = ("stop_loss", "sl", "stop", "stoploss")
+_TAKE_PROFIT_KEYS = ("take_profit", "tp", "target", "takeprofit")
 
-# Aliases that map to Action values
-_BUY_ALIASES = {"buy", "long", "bull", "bullish", "1", "entry_long"}
-_SELL_ALIASES = {"sell", "short", "bear", "bearish", "-1", "entry_short"}
+_BUY_ALIASES  = {"buy", "long", "bull", "bullish", "1", "entry_long", "enter_long"}
+_SELL_ALIASES = {"sell", "short", "bear", "bearish", "-1", "entry_short", "enter_short"}
 
 
 def _find(payload: Dict[str, Any], keys: tuple) -> Optional[Any]:
-    """Return the first value whose lower-cased key is in *keys*."""
     normalised = {k.lower(): v for k, v in payload.items()}
     for key in keys:
         if key in normalised:
@@ -55,25 +42,36 @@ def _parse_action(raw: Any) -> Action:
 def _parse_order_type(raw: Any) -> OrderType:
     if raw is None:
         return OrderType.MARKET
-    val = str(raw).lower().strip()
-    if "limit" in val:
-        return OrderType.LIMIT
-    return OrderType.MARKET
+    return OrderType.LIMIT if "limit" in str(raw).lower() else OrderType.MARKET
+
+
+def _to_float(raw: Any, field: str) -> Optional[float]:
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"Invalid {field} value: '{raw}'")
 
 
 def parse(payload: Dict[str, Any]) -> SignalCreate:
-    """
-    Parse a raw TradingView webhook dict into a SignalCreate.
-    Raises ValueError with a descriptive message on bad input.
-    """
     action = _parse_action(_find(payload, _ACTION_KEYS))
 
+    # Symbol — strip ".P" suffix (e.g. LINKUSDT.P → LINKUSDT for Bybit API)
     raw_symbol = _find(payload, _SYMBOL_KEYS)
     if raw_symbol is None:
         raise ValueError("Signal payload is missing a symbol/ticker field")
     symbol = str(raw_symbol).upper().strip()
+    if symbol.endswith(".P"):
+        symbol = symbol[:-2]
 
+    # Nested order object present in the 3Commas/Pine Script payload format
+    order_obj: Dict[str, Any] = payload.get("order") if isinstance(payload.get("order"), dict) else {}
+
+    # Quantity: flat fields first, then order.amount
     raw_qty = _find(payload, _QUANTITY_KEYS)
+    if raw_qty is None:
+        raw_qty = order_obj.get("amount")
     if raw_qty is None:
         raise ValueError("Signal payload is missing a quantity/qty field")
     try:
@@ -81,18 +79,46 @@ def parse(payload: Dict[str, Any]) -> SignalCreate:
     except (TypeError, ValueError):
         raise ValueError(f"Invalid quantity value: '{raw_qty}'")
 
+    # Price: flat fields first, then order.price
     raw_price = _find(payload, _PRICE_KEYS)
-    price: Optional[float] = None
-    if raw_price is not None:
-        try:
-            price = float(raw_price)
-        except (TypeError, ValueError):
-            raise ValueError(f"Invalid price value: '{raw_price}'")
+    if raw_price is None:
+        raw_price = order_obj.get("price")
+    price = _to_float(raw_price, "price")
 
-    order_type = _parse_order_type(_find(payload, _ORDER_TYPE_KEYS))
+    # Order type: flat fields first, then order.order_type
+    # Guard against _find matching "order" key and returning the nested dict
+    raw_order_type = _find(payload, _ORDER_TYPE_KEYS)
+    if isinstance(raw_order_type, dict):
+        raw_order_type = order_obj.get("order_type")
+    order_type = _parse_order_type(raw_order_type)
 
+    # Category
     raw_category = _find(payload, _CATEGORY_KEYS)
-    category = str(raw_category).lower() if raw_category else "linear"
+    category = str(raw_category).lower() if raw_category and not isinstance(raw_category, dict) else "linear"
+
+    # Stop loss — flat fields only
+    stop_loss = _to_float(_find(payload, _STOP_LOSS_KEYS), "stop_loss")
+
+    # Take profit — flat scalar first, then derive from take_profit.steps[0].price_percent
+    # Guard against _find matching "take_profit" key and returning the nested dict
+    raw_tp = _find(payload, _TAKE_PROFIT_KEYS)
+    take_profit: Optional[float] = None
+
+    if raw_tp is not None and not isinstance(raw_tp, dict):
+        take_profit = _to_float(raw_tp, "take_profit")
+    elif price is not None:
+        tp_obj = payload.get("take_profit")
+        if isinstance(tp_obj, dict) and tp_obj.get("enabled"):
+            steps = tp_obj.get("steps", [])
+            if steps and isinstance(steps[0], dict):
+                pct = steps[0].get("price_percent")
+                if pct is not None:
+                    try:
+                        pct = float(pct)
+                        # pct is already signed (negative for shorts), so this works for both
+                        take_profit = round(price * (1 + pct / 100), 8)
+                    except (TypeError, ValueError):
+                        pass
 
     return SignalCreate(
         action=action,
@@ -102,4 +128,6 @@ def parse(payload: Dict[str, Any]) -> SignalCreate:
         order_type=order_type,
         category=category,
         source=SOURCE_NAME,
+        stop_loss=stop_loss,
+        take_profit=take_profit,
     )

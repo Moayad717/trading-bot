@@ -10,11 +10,6 @@ from models.signal import Action, OrderType, SignalCreate
 
 
 class BybitExchange(BaseExchange):
-    """
-    Bybit Unified Trading adapter using pybit v5.
-    Switches between testnet and live via settings.TESTNET.
-    """
-
     def __init__(self) -> None:
         self._client = HTTP(
             testnet=settings.TESTNET,
@@ -25,10 +20,6 @@ class BybitExchange(BaseExchange):
     @property
     def name(self) -> str:
         return "bybit"
-
-    # ------------------------------------------------------------------
-    # BaseExchange implementation
-    # ------------------------------------------------------------------
 
     def place_order(self, signal: SignalCreate) -> Dict[str, Any]:
         side = "Buy" if signal.action == Action.BUY else "Sell"
@@ -46,6 +37,11 @@ class BybitExchange(BaseExchange):
                 raise ValueError("price is required for limit orders")
             params["price"] = str(signal.price)
             params["timeInForce"] = "GTC"
+
+        if signal.stop_loss is not None:
+            params["stopLoss"] = str(signal.stop_loss)
+        if signal.take_profit is not None:
+            params["takeProfit"] = str(signal.take_profit)
 
         response: Any = self._client.place_order(**params)
         self._raise_for_error(response)
@@ -82,13 +78,9 @@ class BybitExchange(BaseExchange):
                 return entry
         return {}
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _raise_for_error(response: Dict[str, Any]) -> None:
-        """Bybit returns retCode=0 on success. Raise on anything else."""
+        # retCode=0 means success
         ret_code = response.get("retCode", -1)
         if ret_code != 0:
             msg = response.get("retMsg", "Unknown Bybit error")

@@ -1,0 +1,742 @@
+//@version=6
+indicator("RIOT testing", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+
+// ============================================================================
+// 1. INPUTS
+// ============================================================================
+grp_trade = "Trade Management"
+input_target_roi  = input.float(25.0, "Target ROI %",     minval=0.1, step=0.1, group=grp_trade)
+input_leverage    = input.float(50.0, "Leverage",          minval=1.0, step=1.0, group=grp_trade)
+input_long_cost   = input.float(0.20, "Long Cost (USDT)",  step=0.01,            group=grp_trade)
+input_short_cost  = input.float(0.13, "Short Cost (USDT)", step=0.01,            group=grp_trade)
+
+grp_3c = "3Commas Bot Settings"
+input_tv_exchange   = input.string("BYBIT",                  "TV Exchange",   group=grp_3c)
+input_tv_instrument = input.string("LINKUSDT.P",             "TV Instrument", group=grp_3c)
+input_bot_secret    = input.string("eyJhbGciOiJIUzI1NiJ9.eyJzaWduYWxzX3NvdXJjZV9pZCI6MTg4ODE3fQ.NxqNC7vYJzqNatMBDsjJrJxd65B6sDk2XLOQ_7CxUks", "Bot Secret", group=grp_3c)
+input_bot_uuid      = input.string("fb7acae9-b65e-4557-9acd-65ddf0b9885f", "Bot UUID", group=grp_3c)
+
+grp_tf = "Timeframe Settings"
+input_tf        = input.timeframe("", "Source Timeframe (empty = chart)", group=grp_tf,
+    tooltip="Leave empty for chart timeframe. Set 35, 60, 240, D etc. for a different source.")
+input_color     = input.color(color.blue, "Timeframe Color", group=grp_tf)
+input_direction = input.string("Bullish", "Direction", options=["Bullish","Bearish"], group=grp_tf,
+    tooltip="Bullish: long order flows + LI impulse boxes. Bearish: short order flows + UI impulse boxes.")
+
+grp_visual = "Visual Settings"
+input_show_impulse_boxes     = input.bool(true,          "Show Impulse Boxes",      group=grp_visual)
+input_show_patterns          = input.bool(true,          "Show Pattern Boxes",      group=grp_visual)
+input_show_inactive_patterns = input.bool(true,          "Show Completed Patterns", group=grp_visual)
+input_show_tp                = input.bool(true,          "Show TP Lines",           group=grp_visual)
+input_show_table             = input.bool(true,          "Show Statistics Table",   group=grp_visual)
+input_table_pos              = input.string("Top Right",  "Table Position",
+    options=["Top Right","Top Left","Top Center","Middle Right","Middle Left",
+             "Middle Center","Bottom Right","Bottom Left","Bottom Center"],
+    group=grp_visual)
+
+// ============================================================================
+// 2. CONSTANTS & SCALE ANCHOR
+// ============================================================================
+bool IS_BULL = input_direction == "Bullish"
+
+plot(close, title="Scale Anchor", color=color.new(color.white, 100), editable=false)
+
+// ============================================================================
+// 3. HELPER FUNCTIONS
+// ============================================================================
+build_payload(is_long, entry_price, tp_price) =>
+    string action = is_long ? "enter_long" : "enter_short"
+    // Send full position value (cost × leverage) not margin cost.
+    // 3Commas treats 'amount' as position value in USDT, not as margin.
+    // If we sent 0.20 USDT, 3Commas would try to buy 0.020 LINK — below the 0.1 LINK minimum.
+    // Sending 10 USDT (0.20 × 50) gives 1.02 LINK — above the minimum.
+    float  cost   = is_long ? (input_long_cost * input_leverage) : (input_short_cost * input_leverage)
+    '{"secret": "' + input_bot_secret + '", "max_lag": "300", "timestamp": "' + str.tostring(timenow) + '", "trigger_price": "' + str.tostring(close) + '", "tv_exchange": "' + input_tv_exchange + '", "tv_instrument": "' + input_tv_instrument + '", "action": "' + action + '", "bot_uuid": "' + input_bot_uuid + '", "order": {"amount": "' + str.tostring(cost) + '", "currency_type": "quote", "order_type": "limit", "price": "' + str.tostring(entry_price, "#.#####") + '"}, "take_profit": {"enabled": true, "steps": [{"order_type": "limit", "price_percent": ' + str.tostring(is_long ? (input_target_roi / input_leverage) : -(input_target_roi / input_leverage), "#.####") + ', "volume_percent": 100}]}}'
+
+calculate_tp(is_long, entry_price) =>
+    is_long ? entry_price * (1.0 + (input_target_roi / 100.0) / input_leverage) : entry_price * (1.0 - (input_target_roi / 100.0) / input_leverage)
+
+get_rule_label(ptype) =>
+    switch ptype
+        "BULL_STD" => "Rule 2.1 (Impulse Pullback)"
+        "BEAR_STD" => "Rule 2.2 (Impulse Pullback)"
+        "BULL_OB"  => "Rule 4.2 (Bullish OB)"
+        "BEAR_OB"  => "Rule 4.4 (Bearish OB)"
+        "BULL_REV" => "Rule 4.5 (Bullish Rev)"
+        "BEAR_REV" => "Rule 4.3 (Bearish Rev)"
+        =>            ""
+
+get_table_pos(s) =>
+    switch s
+        "Top Right"     => position.top_right
+        "Top Left"      => position.top_left
+        "Top Center"    => position.top_center
+        "Middle Right"  => position.middle_right
+        "Middle Left"   => position.middle_left
+        "Middle Center" => position.middle_center
+        "Bottom Right"  => position.bottom_right
+        "Bottom Left"   => position.bottom_left
+        "Bottom Center" => position.bottom_center
+        =>                 position.top_right
+
+// ============================================================================
+// 4. TYPE DEFINITIONS
+// ============================================================================
+type Pattern
+    string pattern_type
+    int    id
+    float  entry_price
+    float  tp_price
+    int    entry_bar
+    int    confirmation_bar
+    int    entry_time
+    int    confirmation_time
+    string state
+    bool   first_touch_occurred
+    int    fill_bar
+    string hosting_impulse
+    float  box_high
+    float  box_low
+    int    end_time
+
+type ImpulseRecord
+    string impulse_type
+    int    start_bar
+    int    end_bar
+    int    start_time
+    int    end_time
+    float  highest_high
+    float  lowest_low
+
+// ============================================================================
+// 5. MULTI-TIMEFRAME SECURITY PULL
+// ============================================================================
+string tf_actual = input_tf == "" ? timeframe.period : input_tf
+
+[tf_open, tf_high, tf_low, tf_close, tf_time] = request.security(
+    syminfo.tickerid, tf_actual,
+    [open, high, low, close, time],
+    lookahead=barmerge.lookahead_off)
+
+// ============================================================================
+// 6. GLOBAL STATE VARIABLES
+// ============================================================================
+var float last_valid_high = na
+var float last_valid_low  = na
+
+var int   last_bullish_valid_bar  = na
+var int   last_bullish_valid_time = na
+var int   last_bearish_valid_bar  = na
+var int   last_bearish_valid_time = na
+var float last_bullish_valid_high = na
+var float last_bullish_valid_low  = na
+var float last_bearish_valid_high = na
+var float last_bearish_valid_low  = na
+
+var bool  in_upper_impulse        = false
+var int   ui_id                   = 0
+var int   impulse_start_bar       = na
+var int   impulse_start_time      = na
+var float impulse_highest_high    = na
+var float impulse_lowest_low      = na
+var float impulse_protective_low  = na
+
+var bool  in_lower_impulse              = false
+var int   li_id                         = 0
+var int   lower_impulse_start_bar       = na
+var int   lower_impulse_start_time      = na
+var float lower_impulse_highest_high    = na
+var float lower_impulse_lowest_low      = na
+var float lower_impulse_protective_high = na
+
+var array<Pattern>       patterns        = array.new<Pattern>()
+var int                  pattern_counter = 0
+int                      MAX_PATTERNS    = 350
+var array<ImpulseRecord> impulse_history = array.new<ImpulseRecord>()
+
+// Gate variable — initialized to -1 (not na) because na comparisons return na (falsy)
+// A Unix timestamp in ms is always a large positive number, never -1
+var int last_processed_tf_time = -1
+
+var bool  ui_just_completed = false
+var bool  li_just_completed = false
+
+var float completed_ui_lowest_low   = na
+var float completed_ui_highest_high = na
+var int   completed_ui_start_bar    = na
+var int   completed_ui_start_time   = na
+
+var float completed_li_highest_high = na
+var float completed_li_lowest_low   = na
+var int   completed_li_start_bar    = na
+var int   completed_li_start_time   = na
+
+var float pending_bull_std_level      = na
+var int   pending_bull_std_entry_bar  = na
+var int   pending_bull_std_entry_time = na
+var float pending_bull_std_box_high   = na
+var float pending_bull_std_box_low    = na
+var int   pending_bull_std_ui_id      = na
+
+var float pending_bear_std_level      = na
+var int   pending_bear_std_entry_bar  = na
+var int   pending_bear_std_entry_time = na
+var float pending_bear_std_box_high   = na
+var float pending_bear_std_box_low    = na
+var int   pending_bear_std_li_id      = na
+
+var float pending_bear_rev_level    = na
+var int   pending_bear_rev_bar      = na
+var int   pending_bear_rev_time     = na
+var float pending_bear_rev_box_high = na
+var float pending_bear_rev_box_low  = na
+
+var float pending_bull_rev_level    = na
+var int   pending_bull_rev_bar      = na
+var int   pending_bull_rev_time     = na
+var float pending_bull_rev_box_high = na
+var float pending_bull_rev_box_low  = na
+
+// ============================================================================
+// 7. MAIN LOGIC GATE
+// tf_time changes exactly once per confirmed source TF bar.
+// Gate fires once per source bar regardless of chart timeframe.
+// ============================================================================
+if not na(tf_time) and tf_time != last_processed_tf_time
+    last_processed_tf_time := tf_time
+
+    // First-run initialization
+    if na(last_valid_high)
+        last_valid_high := tf_high
+        last_valid_low  := tf_low
+
+    while array.size(patterns) > MAX_PATTERNS
+        array.shift(patterns)
+
+    float prev_last_bullish_valid_high = last_bullish_valid_high
+    float prev_last_bearish_valid_low  = last_bearish_valid_low
+    ui_just_completed := false
+    li_just_completed := false
+
+    // ── VALIDITY & OB ─────────────────────────────────────────────────────────
+    bool is_bullish_valid = tf_high >= last_valid_high
+    bool is_bearish_valid = tf_low  <= last_valid_low
+    bool is_neutral       = not is_bullish_valid and not is_bearish_valid
+    bool is_outside_bar   = bar_index > 0 and not na(last_valid_high) and not na(last_valid_low) and tf_high >= last_valid_high and tf_low <= last_valid_low
+
+    // ── IMPULSE MANAGEMENT ────────────────────────────────────────────────────
+    if is_outside_bar
+        if in_upper_impulse
+            array.push(impulse_history, ImpulseRecord.new(
+                "UI", impulse_start_bar, bar_index - 1,
+                impulse_start_time, tf_time[1],
+                impulse_highest_high, impulse_lowest_low))
+            completed_ui_lowest_low   := impulse_lowest_low
+            completed_ui_highest_high := impulse_highest_high
+            completed_ui_start_bar    := impulse_start_bar
+            completed_ui_start_time   := impulse_start_time
+            ui_just_completed         := true
+            ui_id += 1
+            in_upper_impulse       := true
+            impulse_start_bar      := bar_index
+            impulse_start_time     := tf_time
+            impulse_highest_high   := tf_high
+            impulse_lowest_low     := tf_low
+            impulse_protective_low := tf_low
+
+        if in_lower_impulse
+            array.push(impulse_history, ImpulseRecord.new(
+                "LI", lower_impulse_start_bar, bar_index - 1,
+                lower_impulse_start_time, tf_time[1],
+                lower_impulse_highest_high, lower_impulse_lowest_low))
+            completed_li_highest_high     := lower_impulse_highest_high
+            completed_li_lowest_low       := lower_impulse_lowest_low
+            completed_li_start_bar        := lower_impulse_start_bar
+            completed_li_start_time       := lower_impulse_start_time
+            li_just_completed             := true
+            li_id += 1
+            in_lower_impulse              := true
+            lower_impulse_start_bar       := bar_index
+            lower_impulse_start_time      := tf_time
+            lower_impulse_highest_high    := tf_high
+            lower_impulse_lowest_low      := tf_low
+            lower_impulse_protective_high := tf_high
+
+    if in_upper_impulse and is_bearish_valid and not na(impulse_protective_low) and not is_outside_bar
+        if tf_low <= impulse_protective_low or tf_close < impulse_protective_low
+            array.push(impulse_history, ImpulseRecord.new(
+                "UI", impulse_start_bar, bar_index - 1,
+                impulse_start_time, tf_time[1],
+                impulse_highest_high, impulse_lowest_low))
+            completed_ui_lowest_low   := impulse_lowest_low
+            completed_ui_highest_high := impulse_highest_high
+            completed_ui_start_bar    := impulse_start_bar
+            completed_ui_start_time   := impulse_start_time
+            ui_just_completed         := true
+            in_upper_impulse          := false
+            impulse_start_bar         := na
+
+    if is_bullish_valid and not is_outside_bar
+        if not in_upper_impulse
+            ui_id += 1
+            in_upper_impulse      := true
+            impulse_start_bar     := na(last_bearish_valid_bar)  ? bar_index : last_bearish_valid_bar
+            impulse_start_time    := na(last_bearish_valid_time) ? tf_time   : last_bearish_valid_time
+            impulse_highest_high  := tf_high
+            impulse_lowest_low    := na(last_bearish_valid_low)  ? tf_low    : last_bearish_valid_low
+            impulse_protective_low := tf_low
+        else
+            if tf_high > impulse_highest_high
+                impulse_highest_high := tf_high
+            if tf_low < impulse_lowest_low
+                impulse_lowest_low := tf_low
+            if tf_low > impulse_protective_low
+                impulse_protective_low := tf_low
+
+    if in_upper_impulse and is_neutral
+        if tf_low < impulse_lowest_low
+            impulse_lowest_low := tf_low
+
+    if in_lower_impulse and is_bullish_valid and not na(lower_impulse_protective_high) and not is_outside_bar
+        if tf_high >= lower_impulse_protective_high or tf_close > lower_impulse_protective_high
+            array.push(impulse_history, ImpulseRecord.new(
+                "LI", lower_impulse_start_bar, bar_index - 1,
+                lower_impulse_start_time, tf_time[1],
+                lower_impulse_highest_high, lower_impulse_lowest_low))
+            completed_li_highest_high := lower_impulse_highest_high
+            completed_li_lowest_low   := lower_impulse_lowest_low
+            completed_li_start_bar    := lower_impulse_start_bar
+            completed_li_start_time   := lower_impulse_start_time
+            li_just_completed         := true
+            in_lower_impulse          := false
+            lower_impulse_start_bar   := na
+
+    if is_bearish_valid and not is_outside_bar
+        if not in_lower_impulse
+            li_id += 1
+            in_lower_impulse              := true
+            lower_impulse_start_bar       := na(last_bullish_valid_bar)  ? bar_index : last_bullish_valid_bar
+            lower_impulse_start_time      := na(last_bullish_valid_time) ? tf_time   : last_bullish_valid_time
+            lower_impulse_highest_high    := na(last_bullish_valid_high) ? tf_high   : last_bullish_valid_high
+            lower_impulse_lowest_low      := tf_low
+            lower_impulse_protective_high := tf_high
+        else
+            if tf_low < lower_impulse_lowest_low
+                lower_impulse_lowest_low := tf_low
+            if tf_high > lower_impulse_highest_high
+                lower_impulse_highest_high := tf_high
+            if tf_high < lower_impulse_protective_high
+                lower_impulse_protective_high := tf_high
+
+    if in_lower_impulse and is_neutral
+        if tf_high > lower_impulse_highest_high
+            lower_impulse_highest_high := tf_high
+
+    // ── ARM STANDARD PATTERNS ─────────────────────────────────────────────────
+    if li_just_completed and not na(completed_li_highest_high) and in_upper_impulse
+        pending_bull_std_level      := completed_li_highest_high
+        pending_bull_std_entry_bar  := completed_li_start_bar
+        pending_bull_std_entry_time := completed_li_start_time
+        pending_bull_std_box_high   := completed_li_highest_high
+        pending_bull_std_box_low    := completed_li_lowest_low
+        pending_bull_std_ui_id      := ui_id
+
+    if ui_just_completed and not na(completed_ui_lowest_low) and in_lower_impulse
+        pending_bear_std_level      := completed_ui_lowest_low
+        pending_bear_std_entry_bar  := completed_ui_start_bar
+        pending_bear_std_entry_time := completed_ui_start_time
+        pending_bear_std_box_high   := completed_ui_highest_high
+        pending_bear_std_box_low    := completed_ui_lowest_low
+        pending_bear_std_li_id      := li_id
+
+    // ── OUTSIDE BAR PATTERNS ──────────────────────────────────────────────────
+    if is_outside_bar
+        float ob_body_top = math.max(tf_open, tf_close)
+        float ob_body_bot = math.min(tf_open, tf_close)
+
+        if in_upper_impulse
+            // Rule 4.2 Bullish OB: box_high=prev bull valid high, box_low=OB wick low
+            if not na(prev_last_bullish_valid_high)
+                if ob_body_top >= prev_last_bullish_valid_high
+                    pattern_counter += 1
+                    float tp_c = calculate_tp(true, prev_last_bullish_valid_high)
+                    array.push(patterns, Pattern.new(
+                        "BULL_OB", pattern_counter,
+                        prev_last_bullish_valid_high, tp_c,
+                        impulse_start_bar, bar_index,
+                        impulse_start_time, tf_time,
+                        "UNACTIVE", true, na, "UI",
+                        prev_last_bullish_valid_high, tf_low, na))
+                    if IS_BULL
+                        if not na(tp_c)
+                            alert(build_payload(true, prev_last_bullish_valid_high, tp_c), alert.freq_all)
+
+            // Rule 2.2 Bear STD via OB
+            if not na(completed_ui_lowest_low) and ob_body_bot <= completed_ui_lowest_low
+                pattern_counter += 1
+                float tp_c = calculate_tp(false, completed_ui_lowest_low)
+                array.push(patterns, Pattern.new(
+                    "BEAR_STD", pattern_counter,
+                    completed_ui_lowest_low, tp_c,
+                    completed_ui_start_bar, bar_index,
+                    completed_ui_start_time, tf_time,
+                    "UNACTIVE", true, na, "UI",
+                    completed_ui_highest_high, completed_ui_lowest_low, na))
+                if not IS_BULL
+                    if not na(tp_c)
+                        alert(build_payload(false, completed_ui_lowest_low, tp_c), alert.freq_all)
+
+            pending_bear_rev_level    := tf_low
+            pending_bear_rev_bar      := bar_index
+            pending_bear_rev_time     := tf_time
+            pending_bear_rev_box_high := tf_high
+            pending_bear_rev_box_low  := tf_low
+            pending_bull_rev_level    := na
+
+        if in_lower_impulse
+            // Rule 4.4 Bearish OB: box_high=OB wick high, box_low=prev bear valid low
+            if not na(prev_last_bearish_valid_low)
+                if ob_body_bot <= prev_last_bearish_valid_low
+                    pattern_counter += 1
+                    float tp_c = calculate_tp(false, prev_last_bearish_valid_low)
+                    array.push(patterns, Pattern.new(
+                        "BEAR_OB", pattern_counter,
+                        prev_last_bearish_valid_low, tp_c,
+                        lower_impulse_start_bar, bar_index,
+                        lower_impulse_start_time, tf_time,
+                        "UNACTIVE", true, na, "LI",
+                        tf_high, prev_last_bearish_valid_low, na))
+                    if not IS_BULL
+                        if not na(tp_c)
+                            alert(build_payload(false, prev_last_bearish_valid_low, tp_c), alert.freq_all)
+
+            // Rule 2.1 Bull STD via OB
+            if not na(completed_li_highest_high) and ob_body_top >= completed_li_highest_high
+                pattern_counter += 1
+                float tp_c = calculate_tp(true, completed_li_highest_high)
+                array.push(patterns, Pattern.new(
+                    "BULL_STD", pattern_counter,
+                    completed_li_highest_high, tp_c,
+                    completed_li_start_bar, bar_index,
+                    completed_li_start_time, tf_time,
+                    "UNACTIVE", true, na, "LI",
+                    completed_li_highest_high, completed_li_lowest_low, na))
+                if IS_BULL
+                    if not na(tp_c)
+                        alert(build_payload(true, completed_li_highest_high, tp_c), alert.freq_all)
+
+            pending_bull_rev_level    := tf_high
+            pending_bull_rev_bar      := bar_index
+            pending_bull_rev_time     := tf_time
+            pending_bull_rev_box_high := tf_high
+            pending_bull_rev_box_low  := tf_low
+            pending_bear_rev_level    := na
+
+    // ── STD CONFIRMATIONS ─────────────────────────────────────────────────────
+    // Rule 2.1 Bull STD — body confirmation
+    if not na(pending_bull_std_level)
+        if (not in_upper_impulse) or (ui_id != pending_bull_std_ui_id)
+            pending_bull_std_level := na
+            pending_bull_std_ui_id := na
+        else
+            if tf_high >= pending_bull_std_level
+                if math.max(tf_open, tf_close) >= pending_bull_std_level
+                    pattern_counter += 1
+                    float tp_c = calculate_tp(true, pending_bull_std_level)
+                    array.push(patterns, Pattern.new(
+                        "BULL_STD", pattern_counter,
+                        pending_bull_std_level, tp_c,
+                        pending_bull_std_entry_bar, bar_index,
+                        pending_bull_std_entry_time, tf_time,
+                        "UNACTIVE", true, na, "UI",
+                        pending_bull_std_box_high, pending_bull_std_box_low, na))
+                    if IS_BULL
+                        if not na(tp_c)
+                            alert(build_payload(true, pending_bull_std_level, tp_c), alert.freq_all)
+                pending_bull_std_level := na
+
+    // Rule 2.2 Bear STD — body confirmation
+    if not na(pending_bear_std_level)
+        if (not in_lower_impulse) or (li_id != pending_bear_std_li_id)
+            pending_bear_std_level := na
+            pending_bear_std_li_id := na
+        else
+            if tf_low <= pending_bear_std_level
+                if math.min(tf_open, tf_close) <= pending_bear_std_level
+                    pattern_counter += 1
+                    float tp_c = calculate_tp(false, pending_bear_std_level)
+                    array.push(patterns, Pattern.new(
+                        "BEAR_STD", pattern_counter,
+                        pending_bear_std_level, tp_c,
+                        pending_bear_std_entry_bar, bar_index,
+                        pending_bear_std_entry_time, tf_time,
+                        "UNACTIVE", true, na, "LI",
+                        pending_bear_std_box_high, pending_bear_std_box_low, na))
+                    if not IS_BULL
+                        if not na(tp_c)
+                            alert(build_payload(false, pending_bear_std_level, tp_c), alert.freq_all)
+                pending_bear_std_level := na
+
+    // ── REV CONFIRMATIONS ─────────────────────────────────────────────────────
+    // Rule 4.3 Bear REV — body confirmation
+    if not na(pending_bear_rev_level) and bar_index > pending_bear_rev_bar
+        if tf_low <= pending_bear_rev_level
+            if math.min(tf_open, tf_close) <= pending_bear_rev_level
+                pattern_counter += 1
+                float tp_c = calculate_tp(false, pending_bear_rev_level)
+                array.push(patterns, Pattern.new(
+                    "BEAR_REV", pattern_counter,
+                    pending_bear_rev_level, tp_c,
+                    pending_bear_rev_bar, bar_index,
+                    pending_bear_rev_time, tf_time,
+                    "UNACTIVE", true, na, "OB",
+                    pending_bear_rev_box_high, pending_bear_rev_box_low, na))
+                if not IS_BULL
+                    if not na(tp_c)
+                        alert(build_payload(false, pending_bear_rev_level, tp_c), alert.freq_all)
+            pending_bear_rev_level := na
+
+    // Rule 4.5 Bull REV — body confirmation
+    if not na(pending_bull_rev_level) and bar_index > pending_bull_rev_bar
+        if tf_high >= pending_bull_rev_level
+            if math.max(tf_open, tf_close) >= pending_bull_rev_level
+                pattern_counter += 1
+                float tp_c = calculate_tp(true, pending_bull_rev_level)
+                array.push(patterns, Pattern.new(
+                    "BULL_REV", pattern_counter,
+                    pending_bull_rev_level, tp_c,
+                    pending_bull_rev_bar, bar_index,
+                    pending_bull_rev_time, tf_time,
+                    "UNACTIVE", true, na, "OB",
+                    pending_bull_rev_box_high, pending_bull_rev_box_low, na))
+                if IS_BULL
+                    if not na(tp_c)
+                        alert(build_payload(true, pending_bull_rev_level, tp_c), alert.freq_all)
+            pending_bull_rev_level := na
+
+    // ── FINAL STRUCTURE UPDATE ────────────────────────────────────────────────
+    if not is_neutral
+        if is_bullish_valid
+            last_valid_high         := tf_high
+            last_valid_low          := tf_low
+            last_bullish_valid_bar  := bar_index
+            last_bullish_valid_time := tf_time
+            last_bullish_valid_high := tf_high
+            last_bullish_valid_low  := tf_low
+        if is_bearish_valid
+            last_valid_high         := tf_high
+            last_valid_low          := tf_low
+            last_bearish_valid_bar  := bar_index
+            last_bearish_valid_time := tf_time
+            last_bearish_valid_high := tf_high
+            last_bearish_valid_low  := tf_low
+
+    // ── TRADE MANAGEMENT ─────────────────────────────────────────────────────
+    // All inside gate: only runs on fresh confirmed source-TF data.
+    // Mitigation: wick touch. TP: wick touch.
+    // Both on same bar = valid (price goes down to entry then up to TP within bar).
+    if array.size(patterns) > 0
+        for i = array.size(patterns) - 1 to 0
+            p = array.get(patterns, i)
+            bool is_bull_p = str.contains(p.pattern_type, "BULL")
+            if bar_index > p.confirmation_bar
+                if p.state == "UNACTIVE"
+                    bool touches = is_bull_p ? (tf_low <= p.entry_price) : (tf_high >= p.entry_price)
+                    if touches
+                        p.state    := "ACTIVE"
+                        p.fill_bar := bar_index
+                if p.state == "ACTIVE"
+                    bool tp_hit = is_bull_p ? (tf_high >= p.tp_price) : (tf_low <= p.tp_price)
+                    if tp_hit
+                        p.state := "INACTIVE"
+                        if na(p.end_time)
+                            p.end_time := tf_time
+            array.set(patterns, i, p)
+
+// ============================================================================
+// 8. VISUALIZATION — IMPULSE BOXES
+// Bull instance: LI boxes (bear impulses = where bull patterns form)
+// Bear instance: UI boxes (bull impulses = where bear patterns form)
+// ============================================================================
+if input_show_impulse_boxes and barstate.islast and array.size(impulse_history) > 0
+    for i = 0 to array.size(impulse_history) - 1
+        imp = array.get(impulse_history, i)
+        bool show_this = IS_BULL ? imp.impulse_type == "LI" : imp.impulse_type == "UI"
+        if show_this
+            color imp_brd = IS_BULL ? color.new(#26a69a, 80) : color.new(#ef5350, 80)
+            color imp_bg  = IS_BULL ? color.new(#26a69a, 96) : color.new(#ef5350, 96)
+            box.new(imp.start_time, imp.highest_high, imp.end_time, imp.lowest_low,
+                imp_brd, 1, line.style_dashed, xloc=xloc.bar_time, bgcolor=imp_bg)
+
+// ============================================================================
+// 9. VISUALIZATION — PATTERN BOXES
+// ============================================================================
+if input_show_patterns and barstate.islast and array.size(patterns) > 0
+
+    // PASS 1: ACTIVE
+    for i = 0 to array.size(patterns) - 1
+        p = array.get(patterns, i)
+        if p.state != "ACTIVE"
+            continue
+        bool is_bull_p = str.contains(p.pattern_type, "BULL")
+        if IS_BULL != is_bull_p
+            continue
+        if na(p.entry_bar) or na(p.confirmation_bar) or p.confirmation_bar < p.entry_bar
+            continue
+        if na(p.entry_price) or na(p.tp_price)
+            continue
+
+        float bh   = p.box_high
+        float bl   = p.box_low
+        color bg_c = is_bull_p ? color.new(color.green, 85) : color.new(color.red, 85)
+        box.new(p.entry_time, bh, time, bl, input_color, 3, line.style_solid,
+            xloc=xloc.bar_time, bgcolor=bg_c)
+
+        float  dpct = ((p.tp_price / p.entry_price) - 1) * 100
+        string lbl  = "[" + tf_actual + "] ✓ " + (is_bull_p ? "Bullish" : "Bearish") + " OF [Active]\n📋 " + get_rule_label(p.pattern_type) + "\nEntry: " + str.tostring(p.entry_price, "#.#####") + "\nTP: " + str.tostring(p.tp_price, "#.#####") + "\nΔ: " + str.tostring(dpct, "#.##") + "%"
+        float bspan  = math.abs(bh - bl)
+        float lbl_y  = is_bull_p ? bh + bspan * 0.8 : bl - bspan * 0.8
+        float edge_y = is_bull_p ? bh : bl
+        label.new(time, lbl_y, text=lbl,
+            style=is_bull_p ? label.style_label_down : label.style_label_up,
+            color=input_color, textcolor=color.white, size=size.small, xloc=xloc.bar_time)
+        line.new(time, edge_y, time, lbl_y,
+            color=color.new(color.gray, 60), width=1, style=line.style_dotted, xloc=xloc.bar_time)
+        color ecol = is_bull_p ? color.new(#00e676, 0) : color.new(#ff1744, 0)
+        line.new(p.entry_time, p.entry_price, time, p.entry_price,
+            color=ecol, width=4, style=line.style_solid, xloc=xloc.bar_time, extend=extend.right)
+        if input_show_tp
+            line.new(p.entry_time, p.tp_price, time, p.tp_price,
+                color=color.new(input_color, 40), width=2, style=line.style_dashed,
+                xloc=xloc.bar_time, extend=extend.right)
+
+    // PASS 2: UNACTIVE & INACTIVE
+    for i = 0 to array.size(patterns) - 1
+        p = array.get(patterns, i)
+        if p.state == "ACTIVE" or p.state == "INVALIDATED"
+            continue
+        if p.state == "INACTIVE" and not input_show_inactive_patterns
+            continue
+        bool is_bull_p = str.contains(p.pattern_type, "BULL")
+        if IS_BULL != is_bull_p
+            continue
+        if na(p.entry_bar) or na(p.confirmation_bar) or p.confirmation_bar < p.entry_bar
+            continue
+
+        float  bh      = p.box_high
+        float  bl      = p.box_low
+        bool   is_una  = p.state == "UNACTIVE"
+        string stxt    = is_una ? "Unactive" : "Completed - TP Hit"
+        color  brd_c   = is_una ? input_color : color.new(color.gray, 50)
+        color  bg_c    = is_una ? (is_bull_p ? color.new(color.green, 90) : color.new(color.red, 90)) : color.new(color.gray, 92)
+        color  lbl_c   = is_una ? input_color : color.new(color.gray, 0)
+        color  lin_c   = is_una ? input_color : color.new(color.gray, 50)
+        color  tp_c    = is_una ? color.new(input_color, 40) : color.new(color.gray, 65)
+        int    brd_w   = is_una ? 2 : 1
+        int    re      = is_una ? time : (not na(p.end_time) ? p.end_time : time)
+
+        box.new(p.entry_time, bh, re, bl, brd_c, brd_w, line.style_solid,
+            xloc=xloc.bar_time, bgcolor=bg_c)
+
+        float  dpct  = ((p.tp_price / p.entry_price) - 1) * 100
+        string lbl   = "[" + tf_actual + "] ✓ " + (is_bull_p ? "Bullish" : "Bearish") + " OF [" + stxt + "]\n📋 " + get_rule_label(p.pattern_type) + "\nEntry: " + str.tostring(p.entry_price, "#.#####") + "\nTP: " + str.tostring(p.tp_price, "#.#####") + "\nΔ: " + str.tostring(dpct, "#.##") + "%"
+        float bspan  = math.abs(bh - bl)
+        float lbl_y  = is_bull_p ? bh + bspan * 0.8 : bl - bspan * 0.8
+        float edge_y = is_bull_p ? bh : bl
+        label.new(re, lbl_y, text=lbl,
+            style=is_bull_p ? label.style_label_down : label.style_label_up,
+            color=lbl_c, textcolor=color.white, size=size.small, xloc=xloc.bar_time)
+        line.new(re, edge_y, re, lbl_y,
+            color=color.new(color.gray, 60), width=1, style=line.style_dotted, xloc=xloc.bar_time)
+        line.new(p.entry_time, p.entry_price, re, p.entry_price,
+            color=lin_c, width=2, style=line.style_solid, xloc=xloc.bar_time, extend=extend.none)
+        if input_show_tp
+            line.new(p.entry_time, p.tp_price, re, p.tp_price,
+                color=tp_c, width=1, style=line.style_dashed, xloc=xloc.bar_time, extend=extend.none)
+
+// ============================================================================
+// 10. LIVE MARKERS
+// ============================================================================
+if barstate.islast and array.size(patterns) > 0
+    for i = 0 to array.size(patterns) - 1
+        p = array.get(patterns, i)
+        if p.state != "ACTIVE"
+            continue
+        bool is_bull_p = str.contains(p.pattern_type, "BULL")
+        if IS_BULL != is_bull_p
+            continue
+        string mk = "[" + tf_actual + "] " + (is_bull_p ? "▲ ACTIVE LONG" : "▼ ACTIVE SHORT") + "\nEntry: " + str.tostring(p.entry_price, "#.####")
+        label.new(time, p.entry_price, text=mk,
+            style=label.style_label_left, color=input_color,
+            textcolor=color.white, size=size.normal, xloc=xloc.bar_time)
+        if input_show_tp
+            int tpo = timeframe.in_seconds() * 1000 * 10
+            label.new(time + tpo, p.tp_price,
+                text="TP: " + str.tostring(p.tp_price, "#.####"),
+                style=label.style_label_left, color=color.new(input_color, 40),
+                textcolor=color.white, size=size.small, xloc=xloc.bar_time)
+
+// ============================================================================
+// 11. STATISTICS TABLE
+// Lifecycle order: Unmitigated → Open → Completed
+// ============================================================================
+int cnt_unmitigated = 0
+int cnt_open        = 0
+int cnt_completed   = 0
+
+if array.size(patterns) > 0
+    for i = 0 to array.size(patterns) - 1
+        p = array.get(patterns, i)
+        if IS_BULL != str.contains(p.pattern_type, "BULL")
+            continue
+        switch p.state
+            "UNACTIVE" => cnt_unmitigated += 1
+            "ACTIVE"   => cnt_open        += 1
+            "INACTIVE" => cnt_completed   += 1
+
+var table stats_tbl = table.new(get_table_pos(input_table_pos), 2, 6, border_width=1)
+
+if barstate.islast and input_show_table
+    string imp_disp = in_upper_impulse ? "▲ UI" : in_lower_impulse ? "▼ LI" : "─"
+    color  imp_col  = in_upper_impulse ? color.new(#26a69a, 70) : in_lower_impulse ? color.new(#ef5350, 70) : color.new(#546e7a, 70)
+    string dir_lbl  = IS_BULL ? "▲ Bullish" : "▼ Bearish"
+    string opn_lbl  = IS_BULL ? "Open ▲"   : "Open ▼"
+    color  opn_col  = IS_BULL ? color.new(#66bb6a, 10) : color.new(#ef5350, 10)
+
+    // Row 0: Impulse
+    table.cell(stats_tbl, 0, 0, "Impulse",
+        bgcolor=color.new(#37474f, 30), text_color=color.new(color.white, 10), text_size=size.small)
+    table.cell(stats_tbl, 1, 0, imp_disp,
+        bgcolor=imp_col, text_color=color.white, text_size=size.normal)
+
+    // Row 1: Timeframe + Direction
+    table.cell(stats_tbl, 0, 1, "Timeframe",
+        bgcolor=color.new(#37474f, 85), text_color=color.new(color.white, 30), text_size=size.tiny)
+    table.cell(stats_tbl, 1, 1, tf_actual + " · " + dir_lbl,
+        bgcolor=color.new(input_color, 60), text_color=color.white, text_size=size.small)
+
+    // Row 2: Unmitigated (waiting for entry)
+    table.cell(stats_tbl, 0, 2, "Unmitigated",
+        bgcolor=color.new(#37474f, 85), text_color=color.new(color.white, 30), text_size=size.tiny)
+    table.cell(stats_tbl, 1, 2, str.tostring(cnt_unmitigated),
+        bgcolor=color.new(#455a64, 85), text_color=color.new(#42a5f5, 10), text_size=size.small)
+
+    // Row 3: Open (position active)
+    table.cell(stats_tbl, 0, 3, opn_lbl,
+        bgcolor=color.new(#37474f, 85), text_color=color.new(color.white, 30), text_size=size.tiny)
+    table.cell(stats_tbl, 1, 3, str.tostring(cnt_open),
+        bgcolor=color.new(#455a64, 85), text_color=opn_col, text_size=size.small)
+
+    // Row 4: Completed (TP hit)
+    table.cell(stats_tbl, 0, 4, "Completed",
+        bgcolor=color.new(#37474f, 85), text_color=color.new(color.white, 30), text_size=size.tiny)
+    table.cell(stats_tbl, 1, 4, str.tostring(cnt_completed),
+        bgcolor=color.new(#455a64, 85), text_color=color.new(#42a5f5, 10), text_size=size.small)
+
+    // Row 5: Valid H/L
+    table.cell(stats_tbl, 0, 5, "Valid H/L",
+        bgcolor=color.new(#37474f, 85), text_color=color.new(color.white, 30), text_size=size.tiny)
+    table.cell(stats_tbl, 1, 5,
+        str.tostring(last_valid_high, format.mintick) + "\n" +
+        str.tostring(last_valid_low,  format.mintick),
+        bgcolor=color.new(#455a64, 85), text_color=color.new(color.white, 10), text_size=size.tiny)

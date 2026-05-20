@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import sqlite3
-from contextlib import asynccontextmanager, contextmanager
-from datetime import date, datetime
-from typing import AsyncGenerator, Generator, List, Optional
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator, List, Optional
 
 import aiosqlite
 
-from config import settings
+from config import settings, today_local
 from models.signal import Signal, SignalStatus
 
 _CREATE_TABLE = """
@@ -29,19 +28,16 @@ CREATE TABLE IF NOT EXISTS signals (
 """
 
 
-# ---------------------------------------------------------------------------
-# Sync helpers (used at startup)
-# ---------------------------------------------------------------------------
-
 def init_db_sync() -> None:
     with sqlite3.connect(settings.DB_PATH) as conn:
         conn.execute(_CREATE_TABLE)
+        for col, typedef in [("stop_loss", "REAL"), ("take_profit", "REAL")]:
+            try:
+                conn.execute(f"ALTER TABLE signals ADD COLUMN {col} {typedef}")
+            except sqlite3.OperationalError:
+                pass  # column already exists
         conn.commit()
 
-
-# ---------------------------------------------------------------------------
-# Async connection factory
-# ---------------------------------------------------------------------------
 
 @asynccontextmanager
 async def get_db() -> AsyncGenerator[aiosqlite.Connection, None]:
@@ -50,19 +46,14 @@ async def get_db() -> AsyncGenerator[aiosqlite.Connection, None]:
         yield db
 
 
-# ---------------------------------------------------------------------------
-# Write operations
-# ---------------------------------------------------------------------------
-
 async def insert_signal(signal: Signal) -> int:
-    """Persist a new signal and return its generated id."""
     async with get_db() as db:
         cursor = await db.execute(
             """
             INSERT INTO signals
                 (timestamp, action, symbol, quantity, price, order_type, category,
-                 status, exchange, order_id, source, error_message)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 status, exchange, order_id, source, error_message, stop_loss, take_profit)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 signal.timestamp.isoformat(),
@@ -77,10 +68,12 @@ async def insert_signal(signal: Signal) -> int:
                 signal.order_id,
                 signal.source,
                 signal.error_message,
+                signal.stop_loss,
+                signal.take_profit,
             ),
         )
         await db.commit()
-        return cursor.lastrowid
+        return cursor.lastrowid or 0
 
 
 async def update_signal_status(
@@ -101,10 +94,6 @@ async def update_signal_status(
         await db.commit()
 
 
-# ---------------------------------------------------------------------------
-# Read operations (dashboard)
-# ---------------------------------------------------------------------------
-
 def _row_to_dict(row: aiosqlite.Row) -> dict:
     return dict(row)
 
@@ -119,7 +108,7 @@ async def get_all_signals() -> List[dict]:
 
 
 async def get_signals_today() -> List[dict]:
-    today = date.today().isoformat()
+    today = today_local()
     async with get_db() as db:
         cursor = await db.execute(
             "SELECT * FROM signals WHERE date(timestamp) = ? ORDER BY timestamp DESC",
@@ -130,7 +119,7 @@ async def get_signals_today() -> List[dict]:
 
 
 async def get_signals_before_today() -> List[dict]:
-    today = date.today().isoformat()
+    today = today_local()
     async with get_db() as db:
         cursor = await db.execute(
             "SELECT * FROM signals WHERE date(timestamp) < ? ORDER BY timestamp DESC",
@@ -140,9 +129,38 @@ async def get_signals_before_today() -> List[dict]:
         return [_row_to_dict(r) for r in rows]
 
 
+async def get_performance_stats() -> dict:
+    today = today_local()
+    async with get_db() as db:
+        total_row   = await (await db.execute("SELECT COUNT(*) FROM signals")).fetchone()
+        filled_row  = await (await db.execute("SELECT COUNT(*) FROM signals WHERE status = 'filled'")).fetchone()
+        failed_row  = await (await db.execute("SELECT COUNT(*) FROM signals WHERE status = 'failed'")).fetchone()
+        filled_today_row = await (await db.execute(
+            "SELECT COUNT(*) FROM signals WHERE status = 'filled' AND date(timestamp) = ?", (today,)
+        )).fetchone()
+        failed_today_row = await (await db.execute(
+            "SELECT COUNT(*) FROM signals WHERE status = 'failed' AND date(timestamp) = ?", (today,)
+        )).fetchone()
+
+    total  = total_row[0]  if total_row  else 0
+    filled = filled_row[0] if filled_row else 0
+    failed = failed_row[0] if failed_row else 0
+    filled_today = filled_today_row[0] if filled_today_row else 0
+    failed_today = failed_today_row[0] if failed_today_row else 0
+    win_rate = round(filled / total * 100, 1) if total > 0 else 0.0
+
+    return {
+        "total_signals": total,
+        "filled": filled,
+        "failed": failed,
+        "win_rate": win_rate,
+        "total_filled_today": filled_today,
+        "total_failed_today": failed_today,
+    }
+
+
 async def get_daily_report(report_date: Optional[str] = None) -> dict:
-    """Return per-symbol counts and statuses for a given date (defaults to today)."""
-    target = report_date or date.today().isoformat()
+    target = report_date or today_local()
     async with get_db() as db:
         cursor = await db.execute(
             """
@@ -164,7 +182,8 @@ async def get_daily_report(report_date: Optional[str] = None) -> dict:
         total_cur = await db.execute(
             "SELECT COUNT(*) FROM signals WHERE date(timestamp) = ?", (target,)
         )
-        total = (await total_cur.fetchone())[0]
+        row = await total_cur.fetchone()
+        total = row[0] if row else 0
 
     return {
         "date": target,

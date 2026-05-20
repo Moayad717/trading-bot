@@ -1,3 +1,6 @@
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -8,17 +11,17 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    # Toggle between testnet and live — single variable change
+    # testnet = true, mainnet = false
     TESTNET: bool = True
 
-    # Bybit credentials (never hardcode; load from .env)
     BYBIT_API_KEY: str = ""
     BYBIT_API_SECRET: str = ""
 
-    # Optional shared secret to authenticate incoming webhooks
     WEBHOOK_SECRET: str = ""
 
     DB_PATH: str = "signals.db"
+
+    TIMEZONE: str = "Asia/Beirut"
 
     @property
     def active_exchange(self) -> str:
@@ -26,3 +29,13 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def now_local() -> datetime:
+    """Current time in the configured local timezone, without tzinfo (naive local)."""
+    return datetime.now(ZoneInfo(settings.TIMEZONE)).replace(tzinfo=None)
+
+
+def today_local() -> str:
+    """Today's date string (YYYY-MM-DD) in the configured local timezone."""
+    return datetime.now(ZoneInfo(settings.TIMEZONE)).date().isoformat()

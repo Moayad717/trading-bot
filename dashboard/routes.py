@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 from db import (
     get_all_signals,
     get_daily_report,
+    get_performance_stats,
     get_signals_before_today,
     get_signals_today,
 )
@@ -21,6 +22,11 @@ _HTML = os.path.join(os.path.dirname(__file__), "index.html")
 @router.get("/", include_in_schema=False)
 async def dashboard_ui() -> FileResponse:
     return FileResponse(_HTML, media_type="text/html")
+
+
+@router.get("/stats", summary="Performance statistics")
+async def performance_stats() -> Dict[str, Any]:
+    return await get_performance_stats()
 
 
 @router.get("/signals", summary="All signals (most recent first)")

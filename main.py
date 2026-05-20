@@ -21,7 +21,6 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: create DB tables if they don't exist yet
     init_db_sync()
     mode = "TESTNET" if settings.TESTNET else "LIVE"
     logger.info("Trading bot started — exchange=%s mode=%s", settings.active_exchange, mode)
