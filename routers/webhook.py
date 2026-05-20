@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from config import now_local, settings
 from db import insert_signal, update_signal_status
 from exchanges.bybit import BybitExchange
-from models.signal import Signal, SignalStatus
+from models.signal import OrderType, Signal, SignalStatus
 from sources import tradingview as tv_parser
 
 logger = logging.getLogger(__name__)
@@ -68,16 +68,21 @@ async def tradingview_webhook(request: Request) -> Dict[str, Any]:
 
     try:
         result = exchange.place_order(signal_create)
+        # Market orders execute immediately; limit orders sit on the book until price hits
+        placed_status = (
+            SignalStatus.FILLED if signal_create.order_type == OrderType.MARKET
+            else SignalStatus.OPEN
+        )
         await update_signal_status(
             signal_id,
-            status=SignalStatus.FILLED,
+            status=placed_status,
             order_id=result.get("order_id"),
         )
-        logger.info("Order placed: id=%s symbol=%s action=%s order_id=%s",
-                    signal_id, signal.symbol, signal.action, result.get("order_id"))
+        logger.info("Order placed: id=%s symbol=%s action=%s status=%s order_id=%s",
+                    signal_id, signal.symbol, signal.action, placed_status.value, result.get("order_id"))
         return {
             "signal_id": signal_id,
-            "status": "filled",
+            "status": placed_status.value,
             "order_id": result.get("order_id"),
             "exchange": exchange.name,
         }

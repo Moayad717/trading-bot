@@ -21,7 +21,8 @@ class OrderType(str, Enum):
 
 class SignalStatus(str, Enum):
     PENDING = "pending"
-    FILLED = "filled"
+    OPEN = "open"      # order placed on exchange, waiting for price to hit
+    FILLED = "filled"  # order actually executed
     FAILED = "failed"
 
 

@@ -76,6 +76,18 @@ async def insert_signal(signal: Signal) -> int:
         return cursor.lastrowid or 0
 
 
+def update_order_status_sync(order_id: str, new_status: SignalStatus) -> bool:
+    """Sync update called from the WebSocket callback thread.
+    Only transitions OPEN orders — ignores anything already FILLED or FAILED."""
+    with sqlite3.connect(settings.DB_PATH) as conn:
+        cur = conn.execute(
+            "UPDATE signals SET status = ? WHERE order_id = ? AND status = 'open'",
+            (new_status.value, order_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
 async def update_signal_status(
     signal_id: int,
     status: SignalStatus,

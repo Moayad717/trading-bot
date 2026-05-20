@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from config import settings
 from dashboard.routes import router as dashboard_router
 from db import init_db_sync
+from order_tracker import OrderTracker
 from routers.webhook import router as webhook_router
 
 logging.basicConfig(
@@ -19,12 +20,17 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+tracker = OrderTracker()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db_sync()
     mode = "TESTNET" if settings.TESTNET else "LIVE"
     logger.info("Trading bot started — exchange=%s mode=%s", settings.active_exchange, mode)
+    tracker.start()
     yield
+    tracker.stop()
     logger.info("Trading bot stopped")
 
 
