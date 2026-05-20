@@ -66,7 +66,8 @@ def parse(payload: Dict[str, Any]) -> SignalCreate:
         symbol = symbol[:-2]
 
     # Nested order object present in the 3Commas/Pine Script payload format
-    order_obj: Dict[str, Any] = payload.get("order") if isinstance(payload.get("order"), dict) else {}
+    _order = payload.get("order")
+    order_obj: Dict[str, Any] = _order if isinstance(_order, dict) else {}
 
     # Quantity: flat fields first, then order.amount
     raw_qty = _find(payload, _QUANTITY_KEYS)
