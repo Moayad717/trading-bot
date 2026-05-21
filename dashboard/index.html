@@ -424,12 +424,12 @@
                 <div class="card-value" id="card-history">—</div>
             </div>
             <div class="card">
-                <div class="card-label">Filled Today</div>
-                <div class="card-value green" id="card-filled">—</div>
+                <div class="card-label">Open Orders</div>
+                <div class="card-value indigo" id="card-open">—</div>
             </div>
             <div class="card">
-                <div class="card-label">Failed Today</div>
-                <div class="card-value red" id="card-failed">—</div>
+                <div class="card-label">Last Signal</div>
+                <div class="card-value" id="card-last" style="font-size:1.1rem;padding-top:0.4rem">—</div>
             </div>
         </div>
 
@@ -666,8 +666,9 @@
                 document.getElementById('card-total').textContent = all.total;
                 document.getElementById('card-today').textContent = today.total;
                 document.getElementById('card-history').textContent = history.total;
-                document.getElementById('card-filled').textContent = today.signals.filter(s => s.status === 'filled').length;
-                document.getElementById('card-failed').textContent = today.signals.filter(s => s.status === 'failed').length;
+                document.getElementById('card-open').textContent = all.signals.filter(s => s.status === 'open').length;
+                const lastSig = all.signals[0];
+                document.getElementById('card-last').textContent = lastSig ? fmtTime(lastSig.timestamp) : '—';
 
                 // Today table
                 document.getElementById('pill-today').textContent = today.total;
