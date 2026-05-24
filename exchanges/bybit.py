@@ -30,6 +30,7 @@ class BybitExchange(BaseExchange):
             "side": side,
             "orderType": signal.order_type.value.capitalize(),
             "qty": str(signal.quantity),
+            "positionIdx": 1 if side == "Buy" else 2,
         }
 
         if signal.order_type == OrderType.LIMIT:
