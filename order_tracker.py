@@ -60,7 +60,7 @@ class OrderTracker:
                 if updated:
                     logger.info("Order filled: order_id=%s symbol=%s", order_id, order.get("symbol"))
 
-            elif bybit_status == "Cancelled":
+            elif bybit_status in ("Cancelled", "Rejected", "Expired", "Deactivated"):
                 updated = update_order_status_sync(order_id, SignalStatus.FAILED)
                 if updated:
-                    logger.info("Order cancelled: order_id=%s", order_id)
+                    logger.info("Order %s: order_id=%s", bybit_status.lower(), order_id)

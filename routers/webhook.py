@@ -68,25 +68,6 @@ async def tradingview_webhook(request: Request) -> Dict[str, Any]:
 
     try:
         result = exchange.place_order(signal_create)
-        # Market orders execute immediately; limit orders sit on the book until price hits
-        placed_status = (
-            SignalStatus.FILLED if signal_create.order_type == OrderType.MARKET
-            else SignalStatus.OPEN
-        )
-        await update_signal_status(
-            signal_id,
-            status=placed_status,
-            order_id=result.get("order_id"),
-        )
-        logger.info("Order placed: id=%s symbol=%s action=%s status=%s order_id=%s",
-                    signal_id, signal.symbol, signal.action, placed_status.value, result.get("order_id"))
-        return {
-            "signal_id": signal_id,
-            "status": placed_status.value,
-            "order_id": result.get("order_id"),
-            "exchange": exchange.name,
-        }
-
     except Exception as exc:
         error_msg = str(exc)
         await update_signal_status(signal_id, status=SignalStatus.FAILED, error_message=error_msg)
@@ -95,3 +76,23 @@ async def tradingview_webhook(request: Request) -> Dict[str, Any]:
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail={"signal_id": signal_id, "error": error_msg},
         )
+
+    # Order accepted by exchange — update status outside the error-catching block
+    # Market orders execute immediately; limit orders sit on the book until price hits
+    placed_status = (
+        SignalStatus.FILLED if signal_create.order_type == OrderType.MARKET
+        else SignalStatus.OPEN
+    )
+    await update_signal_status(
+        signal_id,
+        status=placed_status,
+        order_id=result.get("order_id"),
+    )
+    logger.info("Order placed: id=%s symbol=%s action=%s status=%s order_id=%s",
+                signal_id, signal.symbol, signal.action, placed_status.value, result.get("order_id"))
+    return {
+        "signal_id": signal_id,
+        "status": placed_status.value,
+        "order_id": result.get("order_id"),
+        "exchange": exchange.name,
+    }

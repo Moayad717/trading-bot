@@ -16,7 +16,7 @@ _CATEGORY_KEYS    = ("category", "market_type", "contract_type")
 _STOP_LOSS_KEYS     = ("stop_loss", "sl", "stop", "stoploss")
 _TAKE_PROFIT_KEYS   = ("take_profit", "tp", "target", "takeprofit")
 _TRIGGER_PRICE_KEYS = ("trigger_price", "trigger")
-_PATTERN_TYPE_KEYS  = ("pattern", "pattern_type", "rule")
+_PATTERN_TYPE_KEYS  = ("pattern", "pattern_type", "rule_type", "rule")
 
 _BUY_ALIASES  = {"buy", "long", "bull", "bullish", "1", "entry_long", "enter_long"}
 _SELL_ALIASES = {"sell", "short", "bear", "bearish", "-1", "entry_short", "enter_short"}
@@ -114,19 +114,23 @@ def parse(payload: Dict[str, Any]) -> SignalCreate:
 
     if raw_tp is not None and not isinstance(raw_tp, dict):
         take_profit = _to_float(raw_tp, "take_profit")
-    elif price is not None:
-        tp_obj = payload.get("take_profit")
-        if isinstance(tp_obj, dict) and tp_obj.get("enabled"):
-            steps = tp_obj.get("steps", [])
-            if steps and isinstance(steps[0], dict):
-                pct = steps[0].get("price_percent")
-                if pct is not None:
-                    try:
-                        pct = float(pct)
-                        # pct is already signed (negative for shorts), so this works for both
-                        take_profit = round(price * (1 + pct / 100), 8)
-                    except (TypeError, ValueError):
-                        pass
+    else:
+        # Derive TP from take_profit.steps[0].price_percent.
+        # Use price (limit orders) or trigger_price (market/deep orders) as the base.
+        tp_base = price if price is not None else trigger_price
+        if tp_base is not None:
+            tp_obj = payload.get("take_profit")
+            if isinstance(tp_obj, dict) and tp_obj.get("enabled"):
+                steps = tp_obj.get("steps", [])
+                if steps and isinstance(steps[0], dict):
+                    pct = steps[0].get("price_percent")
+                    if pct is not None:
+                        try:
+                            pct = float(pct)
+                            # pct is already signed (negative for shorts)
+                            take_profit = round(tp_base * (1 + pct / 100), 8)
+                        except (TypeError, ValueError):
+                            pass
 
     return SignalCreate(
         action=action,
