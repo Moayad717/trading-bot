@@ -5,6 +5,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Trading Bot Dashboard</title>
+    <link rel="manifest" href="/dashboard/static/manifest.json" />
+    <meta name="theme-color" content="#818cf8" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="TradingBot" />
+    <link rel="apple-touch-icon" href="/dashboard/static/icon.svg" />
     <style>
         :root {
             --bg: #0d0d12;
@@ -711,6 +718,11 @@
 
         // Initial load
         refresh().then(startCountdown);
+
+        // PWA service worker
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/dashboard/sw.js', { scope: '/dashboard/' });
+        }
     </script>
 </body>
 

@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from config import settings
 from dashboard.routes import router as dashboard_router
@@ -48,6 +49,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.mount("/dashboard/static", StaticFiles(directory="dashboard/static"), name="dashboard-static")
 app.include_router(webhook_router)
 app.include_router(dashboard_router)
 

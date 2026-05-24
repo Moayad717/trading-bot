@@ -1,0 +1,18 @@
+{
+  "name": "Trading Bot",
+  "short_name": "TradingBot",
+  "description": "TradingView → Bybit trading bot dashboard",
+  "start_url": "/dashboard/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0d0d12",
+  "theme_color": "#818cf8",
+  "icons": [
+    {
+      "src": "/dashboard/static/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

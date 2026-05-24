@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Query
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from db import (
     get_all_signals,
@@ -16,12 +17,19 @@ from db import (
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
-_HTML = os.path.join(os.path.dirname(__file__), "index.html")
+_DIR  = os.path.dirname(__file__)
+_HTML = os.path.join(_DIR, "index.html")
+_SW   = os.path.join(_DIR, "sw.js")
 
 
 @router.get("/", include_in_schema=False)
 async def dashboard_ui() -> FileResponse:
     return FileResponse(_HTML, media_type="text/html")
+
+
+@router.get("/sw.js", include_in_schema=False)
+async def service_worker() -> FileResponse:
+    return FileResponse(_SW, media_type="application/javascript")
 
 
 @router.get("/stats", summary="Performance statistics")
