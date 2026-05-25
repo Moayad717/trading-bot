@@ -543,15 +543,16 @@
 
         function fmtTime(ts) {
             if (!ts) return '—';
-            const d = new Date(ts.includes('T') && !ts.endsWith('Z') ? ts + 'Z' : ts);
-            return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            // Stored as naive local Beirut time "YYYY-MM-DDTHH:MM:SS" — display as-is
+            const p = ts.replace('T', ' ').split(/[- :]/);
+            return `${p[3]}:${p[4]}:${p[5] || '00'}`;
         }
 
         function fmtDateTime(ts) {
             if (!ts) return '—';
-            const d = new Date(ts.includes('T') && !ts.endsWith('Z') ? ts + 'Z' : ts);
-            return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
-                + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            const p = ts.replace('T', ' ').split(/[- :]/);
+            const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][parseInt(p[1]) - 1] || '';
+            return `${mon} ${parseInt(p[2])} ${p[3]}:${p[4]}`;
         }
 
         function badge(cls, text) {
