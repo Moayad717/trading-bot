@@ -43,6 +43,8 @@ class BybitExchange(BaseExchange):
             params["stopLoss"] = str(signal.stop_loss)
         if signal.take_profit is not None:
             params["takeProfit"] = str(signal.take_profit)
+            params["tpslMode"]   = "Partial"
+            params["tpSize"]     = str(signal.quantity)
 
         response: Any = self._client.place_order(**params)
         self._raise_for_error(response)
