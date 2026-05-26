@@ -100,7 +100,7 @@ def parse(payload: Dict[str, Any]) -> SignalCreate:
     except (TypeError, ValueError):
         raise ValueError(f"Invalid quantity value: '{raw_qty}'")
     if is_notional and order_type == OrderType.LIMIT and price:
-        quantity = quantity / price
+        quantity = round(quantity / price, 1)
 
     # Category
     raw_category = _find(payload, _CATEGORY_KEYS)
