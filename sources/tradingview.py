@@ -9,7 +9,8 @@ SOURCE_NAME = "tradingview"
 # supported field names — TradingView alert payloads vary a lot
 _ACTION_KEYS      = ("action", "side", "signal", "direction", "type_signal")
 _SYMBOL_KEYS      = ("symbol", "ticker", "asset", "instrument", "pair", "tv_instrument")
-_QUANTITY_KEYS    = ("quantity", "qty", "amount", "size", "contracts")
+_QUANTITY_KEYS    = ("quantity", "qty", "size", "contracts")
+_NOTIONAL_KEYS    = ("amount",)  # USDT notional — requires price conversion
 _PRICE_KEYS       = ("price", "limit_price", "entry_price")
 _ORDER_TYPE_KEYS  = ("order_type", "type", "ordertype", "order")
 _CATEGORY_KEYS    = ("category", "market_type", "contract_type")
@@ -71,16 +72,14 @@ def parse(payload: Dict[str, Any]) -> SignalCreate:
     _order = payload.get("order")
     order_obj: Dict[str, Any] = _order if isinstance(_order, dict) else {}
 
-    # Quantity: flat fields first, then order.amount
+    # Quantity: prefer contract-unit keys; fall back to USDT-notional "amount"
     raw_qty = _find(payload, _QUANTITY_KEYS)
+    is_notional = False
     if raw_qty is None:
-        raw_qty = order_obj.get("amount")
+        raw_qty = _find(payload, _NOTIONAL_KEYS) or order_obj.get("amount")
+        is_notional = raw_qty is not None
     if raw_qty is None:
         raise ValueError("Signal payload is missing a quantity/qty field")
-    try:
-        quantity = float(raw_qty)
-    except (TypeError, ValueError):
-        raise ValueError(f"Invalid quantity value: '{raw_qty}'")
 
     # Price: flat fields first, then order.price
     raw_price = _find(payload, _PRICE_KEYS)
@@ -94,6 +93,14 @@ def parse(payload: Dict[str, Any]) -> SignalCreate:
     if isinstance(raw_order_type, dict):
         raw_order_type = order_obj.get("order_type")
     order_type = _parse_order_type(raw_order_type)
+
+    # Convert USDT notional → contracts: qty = amount / price (limit orders only)
+    try:
+        quantity = float(raw_qty)
+    except (TypeError, ValueError):
+        raise ValueError(f"Invalid quantity value: '{raw_qty}'")
+    if is_notional and order_type == OrderType.LIMIT and price:
+        quantity = quantity / price
 
     # Category
     raw_category = _find(payload, _CATEGORY_KEYS)
