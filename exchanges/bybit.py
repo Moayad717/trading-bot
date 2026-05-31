@@ -41,14 +41,39 @@ class BybitExchange(BaseExchange):
 
         if signal.stop_loss is not None:
             params["stopLoss"] = str(signal.stop_loss)
-        if signal.take_profit is not None:
-            params["takeProfit"] = str(signal.take_profit)
-            params["tpslMode"]   = "Partial"
-            params["tpSize"]     = str(signal.quantity)
 
         response: Any = self._client.place_order(**params)
         self._raise_for_error(response)
 
+        result = response.get("result", {})
+        return {
+            "order_id": result.get("orderId", ""),
+            "status": result.get("orderStatus", ""),
+            "raw": response,
+        }
+
+    def place_tp_order(
+        self,
+        symbol: str,
+        side: str,
+        qty: float,
+        price: float,
+        position_idx: int,
+        category: str = "linear",
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {
+            "category": category,
+            "symbol": symbol,
+            "side": side,
+            "orderType": "Limit",
+            "qty": str(qty),
+            "price": str(price),
+            "reduceOnly": True,
+            "timeInForce": "GTC",
+            "positionIdx": position_idx,
+        }
+        response: Any = self._client.place_order(**params)
+        self._raise_for_error(response)
         result = response.get("result", {})
         return {
             "order_id": result.get("orderId", ""),

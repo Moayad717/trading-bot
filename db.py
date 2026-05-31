@@ -80,6 +80,19 @@ async def insert_signal(signal: Signal) -> int:
         return cursor.lastrowid or 0
 
 
+def get_tp_info_sync(order_id: str) -> Optional[dict]:
+    """Return TP placement data for a filled order. Called from the WebSocket thread."""
+    with sqlite3.connect(settings.DB_PATH) as conn:
+        cur = conn.execute(
+            "SELECT take_profit, symbol, action, category FROM signals WHERE order_id = ?",
+            (order_id,),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return None
+    return {"take_profit": row[0], "symbol": row[1], "action": row[2], "category": row[3]}
+
+
 def update_order_status_sync(order_id: str, new_status: SignalStatus) -> bool:
     """Sync update called from the WebSocket callback thread.
     Only transitions OPEN orders — ignores anything already FILLED or FAILED."""

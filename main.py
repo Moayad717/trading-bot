@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from config import settings
 from dashboard.routes import router as dashboard_router
 from db import init_db_sync
+from exchanges.bybit import BybitExchange
 from order_tracker import OrderTracker
 from routers.webhook import router as webhook_router
 
@@ -21,7 +22,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-tracker = OrderTracker()
+tracker = OrderTracker(exchange=BybitExchange())
 
 
 @asynccontextmanager
