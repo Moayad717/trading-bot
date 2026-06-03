@@ -480,7 +480,8 @@
         function fmtTime(ts) {
             if (!ts) return '—';
             const p = ts.replace('T', ' ').split(/[- :]/);
-            return `${p[3]}:${p[4]}:${p[5] || '00'}`;
+            const sec = (p[5] || '00').split('.')[0];  // strip microseconds
+            return `${p[3]}:${p[4]}:${sec}`;
         }
 
         function fmtDateTime(ts) {
@@ -671,19 +672,27 @@
 
         // ── Stats date controls ───────────────────────────────────────────────
 
+        function _localIso(d) {
+            // Format YYYY-MM-DD using LOCAL date parts — avoids UTC-offset shift from toISOString()
+            const y = d.getFullYear();
+            const m = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            return `${y}-${m}-${day}`;
+        }
+
         function isoToday() {
-            return new Date().toISOString().slice(0, 10);
+            return _localIso(new Date());
         }
 
         function isoYesterday() {
             const d = new Date(); d.setDate(d.getDate() - 1);
-            return d.toISOString().slice(0, 10);
+            return _localIso(d);
         }
 
         function isoDayBefore(prevDay) {
             const d = new Date(prevDay + 'T00:00:00');
             d.setDate(d.getDate() - 1);
-            return d.toISOString().slice(0, 10);
+            return _localIso(d);
         }
 
         function resetStatsDates() {
