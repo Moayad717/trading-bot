@@ -1,6 +1,5 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -24,102 +23,69 @@
             --red: #ef4444;
             --amber: #f59e0b;
             --indigo: #818cf8;
+            --teal: #2dd4bf;
+            --sky: #38bdf8;
         }
-
-        *,
-        *::before,
-        *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
         body {
-            background: var(--bg);
-            color: var(--text);
+            background: var(--bg); color: var(--text);
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-            font-size: 14px;
-            line-height: 1.5;
-            min-height: 100vh;
+            font-size: 14px; line-height: 1.5; min-height: 100vh;
         }
 
-        /* ── Header ─────────────────────────────────────── */
+        /* ── Header ─────────────────────────────── */
         header {
-            position: sticky; top: 0; z-index: 10;
-            background: var(--surface);
-            border-bottom: 1px solid var(--border);
+            position: sticky; top: 0; z-index: 20;
+            background: var(--surface); border-bottom: 1px solid var(--border);
             padding: 0.85rem 2rem;
             display: flex; justify-content: space-between; align-items: center;
         }
-        .logo { font-size: 1rem; font-weight: 700; letter-spacing: -0.02em; color: var(--text); }
+        .logo { font-size: 1rem; font-weight: 700; letter-spacing: -0.02em; }
         .logo span { color: var(--indigo); }
-        .header-meta {
-            display: flex; align-items: center; gap: 1.25rem;
-            font-size: 0.78rem; color: var(--muted);
-        }
+        .header-meta { display: flex; align-items: center; gap: 1.25rem; font-size: 0.78rem; color: var(--muted); }
         .status-dot {
-            display: inline-block; width: 7px; height: 7px;
-            border-radius: 50%; background: var(--green);
-            margin-right: 5px; vertical-align: middle; transition: background 0.3s;
+            display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+            background: var(--green); margin-right: 5px; vertical-align: middle; transition: background .3s;
         }
-        .status-dot.loading { background: var(--amber); animation: blink 0.9s infinite; }
+        .status-dot.loading { background: var(--amber); animation: blink .9s infinite; }
         .status-dot.error   { background: var(--red); }
-        @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.25} }
+        @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.25} }
 
-        /* ── Layout ──────────────────────────────────────── */
+        /* ── Layout ──────────────────────────────── */
         main { max-width: 1440px; margin: 0 auto; padding: 1.75rem 2rem 3rem; }
 
-        /* ── Stat Cards ──────────────────────────────────── */
+        /* ── Summary cards ───────────────────────── */
         .cards {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
             gap: 1rem; margin-bottom: 2rem;
         }
         .card {
             background: var(--surface); border: 1px solid var(--border);
             border-radius: 10px; padding: 1.1rem 1.25rem 1.25rem;
         }
-        .card-label {
-            font-size: 0.7rem; font-weight: 600; text-transform: uppercase;
-            letter-spacing: 0.07em; color: var(--muted); margin-bottom: 0.5rem;
-        }
-        .card-value { font-size: 2.1rem; font-weight: 800; letter-spacing: -0.03em; line-height: 1; }
+        .card-label { font-size: .7rem; font-weight: 600; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin-bottom: .5rem; }
+        .card-value { font-size: 2.1rem; font-weight: 800; letter-spacing: -.03em; line-height: 1; }
         .card-value.green  { color: var(--green); }
         .card-value.red    { color: var(--red); }
         .card-value.indigo { color: var(--indigo); }
+        .card-value.amber  { color: var(--amber); }
 
-        /* ── Panels ──────────────────────────────────────── */
-        .panel {
-            background: var(--surface); border: 1px solid var(--border);
-            border-radius: 10px; margin-bottom: 1.5rem; overflow: hidden;
-        }
+        /* ── Panels ──────────────────────────────── */
+        .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 1.5rem; overflow: hidden; }
         .panel-header {
             display: flex; justify-content: space-between; align-items: center;
-            padding: 0.9rem 1.25rem; border-bottom: 1px solid var(--border);
+            padding: .9rem 1.25rem; border-bottom: 1px solid var(--border);
         }
-        .panel-title { font-weight: 600; font-size: 0.88rem; }
+        .panel-title { font-weight: 600; font-size: .88rem; }
         .pill {
             background: var(--surface2); border: 1px solid var(--border);
-            border-radius: 20px; padding: 0.15rem 0.65rem;
-            font-size: 0.72rem; color: var(--muted);
+            border-radius: 20px; padding: .15rem .65rem; font-size: .72rem; color: var(--muted);
         }
 
-        /* ── Tables ──────────────────────────────────────── */
-        .table-wrap { overflow-x: auto; overflow-y: auto; max-height: 480px; }
-        table { width: 100%; border-collapse: collapse; }
-        thead th {
-            position: sticky; top: 0; z-index: 1; background: var(--surface);
-            padding: 0.65rem 1.25rem; text-align: left;
-            font-size: 0.68rem; font-weight: 600; text-transform: uppercase;
-            letter-spacing: 0.07em; color: var(--muted);
-            border-bottom: 1px solid var(--border); white-space: nowrap;
-        }
-        tbody td { padding: 0.75rem 1.25rem; border-bottom: 1px solid var(--border); vertical-align: middle; }
-        tbody tr:last-child td { border-bottom: none; }
-        tbody tr:hover { background: var(--surface2); }
-        .empty-row td { text-align: center; color: var(--muted); padding: 2.5rem; font-size: 0.85rem; }
-
-        /* ── Badges ──────────────────────────────────────── */
+        /* ── Badges ──────────────────────────────── */
         .badge {
-            display: inline-block; padding: 0.18rem 0.52rem; border-radius: 5px;
-            font-size: 0.68rem; font-weight: 700; text-transform: uppercase;
-            letter-spacing: 0.04em; line-height: 1.4;
+            display: inline-block; padding: .18rem .52rem; border-radius: 5px;
+            font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; line-height: 1.4;
         }
         .badge-open      { background: rgba(129,140,248,.12); color: var(--indigo); }
         .badge-active    { background: rgba(245,158,11,.12);  color: var(--amber); }
@@ -130,736 +96,788 @@
         .badge-failed    { background: rgba(239,68,68,.12);   color: var(--red); }
         .badge-pending   { background: rgba(245,158,11,.12);  color: var(--amber); }
 
-        /* ── Mono / utility ──────────────────────────────── */
-        .mono { font-family: 'SF Mono','Fira Code','Consolas',monospace; font-size: 0.8rem; }
-        .sym  { font-weight: 700; font-size: 0.88rem; }
+        /* ── Session tags ────────────────────────── */
+        .stag {
+            display: inline-block; padding: .1rem .38rem; border-radius: 4px;
+            font-size: .6rem; font-weight: 700; letter-spacing: .04em; margin: .1rem .08rem 0 0;
+        }
+        .stag-sydney     { background: rgba(56,189,248,.12);  color: var(--sky); }
+        .stag-tokyo      { background: rgba(45,212,191,.12);  color: var(--teal); }
+        .stag-prelondon  { background: rgba(245,158,11,.12);  color: var(--amber); }
+        .stag-london     { background: rgba(129,140,248,.12); color: var(--indigo); }
+        .stag-londonny   { background: rgba(168,85,247,.12);  color: #a855f7; }
+        .stag-newyork    { background: rgba(239,68,68,.12);   color: var(--red); }
+        .stag-offhours   { background: rgba(160,160,160,.08); color: var(--muted); }
+
+        /* ── Utility ──────────────────────────────── */
+        .mono { font-family: 'SF Mono','Fira Code','Consolas',monospace; font-size: .8rem; }
+        .sym  { font-weight: 700; font-size: .88rem; }
+        .dim  { color: var(--muted); }
         .order-id {
-            display: inline-block; max-width: 130px; overflow: hidden;
-            text-overflow: ellipsis; white-space: nowrap;
-            vertical-align: bottom; cursor: default;
+            display: inline-block; max-width: 110px; overflow: hidden;
+            text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; cursor: default;
         }
-        .dim { color: var(--muted); }
 
-        /* ── Daily report breakdown ──────────────────────── */
-        .breakdown-grid {
-            display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-            gap: 1rem; padding: 1.25rem;
-        }
-        .bk-card {
-            background: var(--surface2); border: 1px solid var(--border);
-            border-radius: 8px; padding: 1rem 1.1rem;
-        }
-        .bk-symbol { font-weight: 800; font-size: 1rem; letter-spacing: -0.01em; margin-bottom: 0.6rem; }
-        .bk-row {
-            display: flex; justify-content: space-between; align-items: center;
-            margin-bottom: 0.35rem; font-size: 0.8rem;
-        }
-        .bk-row .dim { font-size: 0.75rem; }
-        .bk-notional {
-            margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid var(--border);
-            font-size: 0.78rem; color: var(--muted);
-            display: flex; justify-content: space-between;
-        }
-        .bk-notional span:last-child { color: var(--text); font-weight: 600; }
-
-        /* ── Performance panel ───────────────────────────── */
-        .perf-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0; }
+        /* ── Perf panel ───────────────────────────── */
+        .perf-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
         .perf-stat { padding: 1.25rem 1.5rem; border-right: 1px solid var(--border); }
         .perf-stat:last-child { border-right: none; }
-        .perf-label {
-            font-size: 0.7rem; font-weight: 600; text-transform: uppercase;
-            letter-spacing: 0.07em; color: var(--muted); margin-bottom: 0.4rem;
-        }
-        .perf-value { font-size: 1.8rem; font-weight: 800; letter-spacing: -0.03em; line-height: 1; }
+        .perf-label { font-size: .7rem; font-weight: 600; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin-bottom: .4rem; }
+        .perf-value { font-size: 1.8rem; font-weight: 800; letter-spacing: -.03em; line-height: 1; }
         .perf-value.indigo { color: var(--indigo); }
         .perf-value.green  { color: var(--green); }
         .perf-value.red    { color: var(--red); }
-        .perf-sub { font-size: 0.75rem; color: var(--muted); margin-top: 0.3rem; }
+        .perf-sub  { font-size: .75rem; color: var(--muted); margin-top: .3rem; }
 
-        /* ── Section header with controls ────────────────── */
-        .section-label {
-            font-size: 0.75rem; font-weight: 700; text-transform: uppercase;
-            letter-spacing: 0.08em; color: var(--indigo);
-            margin: 2.5rem 0 1rem; padding-left: 0.1rem;
-        }
+        /* ── Daily report ─────────────────────────── */
+        .breakdown-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px,1fr)); gap: 1rem; padding: 1.25rem; }
+        .bk-card { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.1rem; }
+        .bk-symbol { font-weight: 800; font-size: 1rem; letter-spacing: -.01em; margin-bottom: .6rem; }
+        .bk-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: .35rem; font-size: .8rem; }
+        .bk-notional { margin-top: .5rem; padding-top: .5rem; border-top: 1px solid var(--border); font-size: .78rem; color: var(--muted); display: flex; justify-content: space-between; }
+        .bk-notional span:last-child { color: var(--text); font-weight: 600; }
 
-        /* ── Date controls ───────────────────────────────── */
-        .date-row {
-            display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-end;
+        /* ── Filter bar ──────────────────────────── */
+        .filter-bar {
             padding: 1rem 1.25rem; border-bottom: 1px solid var(--border);
+            display: flex; flex-direction: column; gap: .65rem;
         }
-        .date-group { display: flex; flex-direction: column; gap: 0.3rem; }
-        .date-group label { font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }
-        .date-input {
-            background: var(--surface2); border: 1px solid var(--border);
-            border-radius: 6px; padding: 0.4rem 0.7rem;
-            color: var(--text); font-size: 0.82rem; font-family: inherit;
-            cursor: pointer;
+        .filter-row { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+        .filter-label { font-size: .68rem; font-weight: 600; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); white-space: nowrap; }
+        .filter-input, .filter-select {
+            background: var(--surface2); border: 1px solid var(--border); border-radius: 6px;
+            padding: .35rem .6rem; color: var(--text); font-size: .8rem; font-family: inherit;
+            height: 30px;
         }
-        .date-input:focus { outline: 1px solid var(--indigo); }
-        .btn {
-            background: var(--indigo); color: #fff; border: none;
-            border-radius: 6px; padding: 0.45rem 1rem;
-            font-size: 0.82rem; font-weight: 600; cursor: pointer;
-            transition: opacity 0.15s;
+        .filter-input:focus, .filter-select:focus { outline: 1px solid var(--indigo); }
+        .filter-select { cursor: pointer; padding-right: 1.5rem; appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23a0a0a0'/%3E%3C/svg%3E");
+            background-repeat: no-repeat; background-position: right .5rem center;
         }
-        .btn:hover { opacity: 0.85; }
-        .btn-ghost {
-            background: var(--surface2); color: var(--text);
-            border: 1px solid var(--border);
+        .filter-sym { width: 110px; }
+        .filter-date { width: 130px; }
+        .qbtn {
+            background: var(--surface2); border: 1px solid var(--border); border-radius: 6px;
+            padding: .3rem .65rem; color: var(--muted); font-size: .75rem; font-weight: 600;
+            cursor: pointer; transition: all .15s; height: 30px;
+        }
+        .qbtn:hover, .qbtn.active { background: var(--indigo); border-color: var(--indigo); color: #fff; }
+        .btn-csv {
+            margin-left: auto; background: var(--surface2); border: 1px solid var(--border);
+            border-radius: 6px; padding: .3rem .85rem; color: var(--text);
+            font-size: .78rem; font-weight: 600; cursor: pointer; transition: opacity .15s; height: 30px;
+        }
+        .btn-csv:hover { opacity: .8; }
+        .filter-sep { width: 1px; height: 20px; background: var(--border); margin: 0 .25rem; }
+
+        /* ── Signals table ───────────────────────── */
+        .table-wrap { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; }
+        thead th {
+            position: sticky; top: 0; z-index: 1; background: var(--surface);
+            padding: .6rem 1rem; text-align: left;
+            font-size: .67rem; font-weight: 600; text-transform: uppercase; letter-spacing: .07em;
+            color: var(--muted); border-bottom: 1px solid var(--border); white-space: nowrap;
+        }
+        thead th.sortable { cursor: pointer; user-select: none; }
+        thead th.sortable:hover { color: var(--text); }
+        thead th.sort-asc::after  { content: ' ↑'; color: var(--indigo); }
+        thead th.sort-desc::after { content: ' ↓'; color: var(--indigo); }
+        tbody td { padding: .65rem 1rem; border-bottom: 1px solid var(--border); vertical-align: middle; }
+        tbody tr:last-child td { border-bottom: none; }
+        tbody tr:hover { background: var(--surface2); }
+        .empty-row td { text-align: center; color: var(--muted); padding: 3rem; font-size: .85rem; }
+        .tp-cell { display: flex; flex-direction: column; gap: .1rem; }
+        .tp-pct  { font-size: .72rem; }
+
+        /* ── Pagination ──────────────────────────── */
+        .pagination {
+            display: flex; align-items: center; gap: .5rem;
+            padding: .75rem 1.25rem; border-top: 1px solid var(--border);
+            font-size: .78rem; color: var(--muted);
+        }
+        .pagination .count { flex: 1; }
+        .page-btn {
+            background: var(--surface2); border: 1px solid var(--border); border-radius: 6px;
+            padding: .3rem .7rem; color: var(--text); font-size: .78rem; cursor: pointer;
+            transition: opacity .15s;
+        }
+        .page-btn:disabled { opacity: .35; cursor: default; }
+        .page-btn:not(:disabled):hover { border-color: var(--indigo); color: var(--indigo); }
+        .page-info { padding: .3rem .5rem; font-size: .78rem; }
+
+        /* ── Section divider ─────────────────────── */
+        .section-label {
+            font-size: .72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .09em;
+            color: var(--indigo); margin: 2.5rem 0 1rem; padding-left: .1rem;
         }
 
-        /* ── Stats table ─────────────────────────────────── */
+        /* ── Stats table ─────────────────────────── */
         .stats-table-wrap { overflow-x: auto; }
         .stats-table { width: 100%; border-collapse: collapse; table-layout: auto; }
         .stats-table th {
-            position: sticky; top: 0; z-index: 1;
-            background: var(--surface); padding: 0.55rem 0.75rem;
-            text-align: center; font-size: 0.65rem; font-weight: 700;
-            text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted);
-            border-bottom: 1px solid var(--border); white-space: nowrap;
+            position: sticky; top: 0; z-index: 1; background: var(--surface);
+            padding: .55rem .75rem; text-align: center;
+            font-size: .65rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
+            color: var(--muted); border-bottom: 1px solid var(--border); white-space: nowrap;
         }
         .stats-table th.row-label { text-align: left; }
-        .stats-table td { padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+        .stats-table td { padding: .4rem .5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
         .stats-table tbody tr:last-child td { border-bottom: none; font-weight: 700; }
         .stats-table tbody tr:hover td { background: var(--surface2); }
-        .row-label-cell {
-            white-space: nowrap; font-weight: 600; font-size: 0.78rem;
-            padding: 0.4rem 0.75rem; vertical-align: middle;
-            border-right: 1px solid var(--border);
-        }
-        .stat-cell {
-            min-width: 110px;
-            font-size: 0.68rem;
-            background: var(--surface);
-        }
-        .stat-cell-inner {
-            display: grid; grid-template-columns: 1fr 1fr; gap: 0;
-            border-radius: 6px; overflow: hidden;
-        }
-        .stat-col { padding: 0.35rem 0.45rem; }
+        .row-label-cell { white-space: nowrap; font-weight: 600; font-size: .78rem; padding: .4rem .75rem; vertical-align: middle; border-right: 1px solid var(--border); }
+        .stat-cell { min-width: 110px; font-size: .68rem; }
+        .stat-cell-inner { display: grid; grid-template-columns: 1fr 1fr; border-radius: 6px; overflow: hidden; }
+        .stat-col { padding: .35rem .45rem; }
         .stat-col:first-child { border-right: 1px solid var(--border); }
-        .stat-col-head {
-            font-size: 0.6rem; font-weight: 700; text-transform: uppercase;
-            letter-spacing: 0.05em; color: var(--indigo); margin-bottom: 0.25rem;
-        }
-        .stat-line { display: flex; justify-content: space-between; margin-bottom: 0.1rem; color: var(--muted); }
+        .stat-col-head { font-size: .6rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--indigo); margin-bottom: .25rem; }
+        .stat-line { display: flex; justify-content: space-between; margin-bottom: .1rem; color: var(--muted); }
         .stat-line span:last-child { color: var(--text); font-weight: 600; }
-        .stat-rate {
-            font-size: 0.72rem; font-weight: 800; text-align: center;
-            padding: 0.2rem 0.3rem; border-radius: 4px; margin-top: 0.3rem;
-        }
-        .rate-green  { color: var(--green);  background: rgba(34,197,94,.1); }
-        .rate-amber  { color: var(--amber);  background: rgba(245,158,11,.1); }
-        .rate-red    { color: var(--red);    background: rgba(239,68,68,.1); }
-        .rate-none   { color: var(--muted);  background: transparent; }
+        .stat-rate { font-size: .72rem; font-weight: 800; text-align: center; padding: .2rem .3rem; border-radius: 4px; margin-top: .3rem; }
+        .rate-green { color: var(--green);  background: rgba(34,197,94,.1); }
+        .rate-amber { color: var(--amber);  background: rgba(245,158,11,.1); }
+        .rate-red   { color: var(--red);    background: rgba(239,68,68,.1); }
+        .rate-none  { color: var(--muted);  background: transparent; }
 
-        /* ── Summary cards ───────────────────────────────── */
-        .summary-cards {
-            display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-            gap: 1rem; padding: 1.25rem;
-        }
-        .summary-card {
-            background: var(--surface2); border: 1px solid var(--border);
-            border-radius: 8px; padding: 1rem 1.1rem;
-        }
-        .summary-card-label {
-            font-size: 0.68rem; font-weight: 600; text-transform: uppercase;
-            letter-spacing: 0.07em; color: var(--muted); margin-bottom: 0.5rem;
-        }
-        .summary-card-value { font-size: 1.15rem; font-weight: 800; color: var(--indigo); }
-        .summary-card-sub   { font-size: 0.72rem; color: var(--muted); margin-top: 0.25rem; }
+        /* ── Summary insight cards ───────────────── */
+        .insight-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px,1fr)); gap: 1rem; padding: 1.25rem; }
+        .ic { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.1rem; }
+        .ic-label { font-size: .68rem; font-weight: 600; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin-bottom: .5rem; }
+        .ic-value { font-size: 1.1rem; font-weight: 800; color: var(--indigo); }
+        .ic-sub   { font-size: .72rem; color: var(--muted); margin-top: .25rem; }
+
+        /* ── Date controls (stats) ───────────────── */
+        .date-row { display: flex; flex-wrap: wrap; gap: .75rem; align-items: flex-end; padding: 1rem 1.25rem; border-bottom: 1px solid var(--border); }
+        .date-group { display: flex; flex-direction: column; gap: .3rem; }
+        .date-group label { font-size: .68rem; font-weight: 600; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); }
+        .date-input { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: .4rem .7rem; color: var(--text); font-size: .82rem; font-family: inherit; cursor: pointer; }
+        .date-input:focus { outline: 1px solid var(--indigo); }
+        .btn { background: var(--indigo); color: #fff; border: none; border-radius: 6px; padding: .45rem 1rem; font-size: .82rem; font-weight: 600; cursor: pointer; transition: opacity .15s; }
+        .btn:hover { opacity: .85; }
+        .btn-ghost { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
     </style>
 </head>
-
 <body>
 
-    <header>
-        <div class="logo">Trading<span>Bot</span></div>
-        <div class="header-meta">
-            <span id="updated-at"><span class="status-dot loading" id="dot"></span>Loading…</span>
-            <span id="next-refresh"></span>
-        </div>
-    </header>
+<header>
+    <div class="logo">Trading<span>Bot</span></div>
+    <div class="header-meta">
+        <span id="updated-at"><span class="status-dot loading" id="dot"></span>Loading…</span>
+        <span id="next-refresh"></span>
+    </div>
+</header>
 
-    <main>
-        <!-- ══ Stat Cards ════════════════════════════════════════════════════ -->
-        <div class="cards">
-            <div class="card">
-                <div class="card-label">Total Signals</div>
-                <div class="card-value indigo" id="card-total">—</div>
-            </div>
-            <div class="card">
-                <div class="card-label">Today</div>
-                <div class="card-value" id="card-today">—</div>
-            </div>
-            <div class="card">
-                <div class="card-label">History</div>
-                <div class="card-value" id="card-history">—</div>
-            </div>
-            <div class="card">
-                <div class="card-label">Open Orders</div>
-                <div class="card-value indigo" id="card-open">—</div>
-            </div>
-            <div class="card">
-                <div class="card-label">Last Signal</div>
-                <div class="card-value" id="card-last" style="font-size:1.1rem;padding-top:0.4rem">—</div>
-            </div>
-        </div>
+<main>
 
-        <!-- ══ Performance ═══════════════════════════════════════════════════ -->
-        <div class="panel" style="margin-bottom:1.5rem">
-            <div class="panel-header"><span class="panel-title">Performance</span></div>
-            <div class="perf-grid">
-                <div class="perf-stat">
-                    <div class="perf-label">Win Rate</div>
-                    <div class="perf-value indigo" id="perf-winrate">—</div>
-                    <div class="perf-sub" id="perf-ratio">— / —</div>
-                </div>
-                <div class="perf-stat">
-                    <div class="perf-label">Filled (all time)</div>
-                    <div class="perf-value green" id="perf-filled">—</div>
-                </div>
-                <div class="perf-stat">
-                    <div class="perf-label">Failed (all time)</div>
-                    <div class="perf-value red" id="perf-failed">—</div>
-                </div>
-                <div class="perf-stat">
-                    <div class="perf-label">Filled Today</div>
-                    <div class="perf-value green" id="perf-filled-today">—</div>
-                </div>
-                <div class="perf-stat">
-                    <div class="perf-label">Failed Today</div>
-                    <div class="perf-value red" id="perf-failed-today">—</div>
-                </div>
+    <!-- ── Summary cards ───────────────────────────────────────────── -->
+    <div class="cards">
+        <div class="card"><div class="card-label">Total Signals</div><div class="card-value indigo" id="card-total">—</div></div>
+        <div class="card"><div class="card-label">Today</div><div class="card-value" id="card-today">—</div></div>
+        <div class="card"><div class="card-label">Open</div><div class="card-value indigo" id="card-open">—</div></div>
+        <div class="card"><div class="card-label">Active</div><div class="card-value amber" id="card-active">—</div></div>
+        <div class="card"><div class="card-label">Completed</div><div class="card-value green" id="card-completed">—</div></div>
+        <div class="card"><div class="card-label">Failed</div><div class="card-value red" id="card-failed-card">—</div></div>
+        <div class="card"><div class="card-label">Last Signal</div><div class="card-value" id="card-last" style="font-size:1rem;padding-top:.4rem">—</div></div>
+    </div>
+
+    <!-- ── Performance ─────────────────────────────────────────────── -->
+    <div class="panel">
+        <div class="panel-header"><span class="panel-title">Performance</span></div>
+        <div class="perf-grid">
+            <div class="perf-stat">
+                <div class="perf-label">Win Rate</div>
+                <div class="perf-value indigo" id="perf-winrate">—</div>
+                <div class="perf-sub" id="perf-ratio">— / —</div>
             </div>
+            <div class="perf-stat"><div class="perf-label">Filled (all)</div><div class="perf-value green" id="perf-filled">—</div></div>
+            <div class="perf-stat"><div class="perf-label">Failed (all)</div><div class="perf-value red" id="perf-failed">—</div></div>
+            <div class="perf-stat"><div class="perf-label">Filled Today</div><div class="perf-value green" id="perf-filled-today">—</div></div>
+            <div class="perf-stat"><div class="perf-label">Failed Today</div><div class="perf-value red" id="perf-failed-today">—</div></div>
+        </div>
+    </div>
+
+    <!-- ── Daily Report ────────────────────────────────────────────── -->
+    <div class="panel">
+        <div class="panel-header">
+            <span class="panel-title">Daily Report — <span id="report-date">today</span></span>
+            <span class="pill" id="pill-report">0 signals</span>
+        </div>
+        <div id="breakdown-container"></div>
+    </div>
+
+    <!-- ── Signals ─────────────────────────────────────────────────── -->
+    <div class="panel">
+        <div class="panel-header">
+            <span class="panel-title">Signals</span>
+            <span class="pill" id="pill-signals">0</span>
         </div>
 
-        <!-- ══ Today's Signals ════════════════════════════════════════════════ -->
-        <div class="panel">
-            <div class="panel-header">
-                <span class="panel-title">Today's Signals</span>
-                <span class="pill" id="pill-today">0</span>
+        <!-- Filter bar -->
+        <div class="filter-bar">
+            <!-- Row 1: date range -->
+            <div class="filter-row">
+                <span class="filter-label">Date</span>
+                <input type="date" id="f-from" class="filter-input filter-date" placeholder="From" />
+                <input type="date" id="f-to"   class="filter-input filter-date" placeholder="To" />
+                <button class="qbtn" onclick="setDateRange('today')">Today</button>
+                <button class="qbtn" onclick="setDateRange('yesterday')">Yesterday</button>
+                <button class="qbtn" onclick="setDateRange('7d')">Last 7d</button>
+                <button class="qbtn active" id="qbtn-all" onclick="setDateRange('all')">All Time</button>
+                <div class="filter-sep"></div>
+                <span class="filter-label">Symbol</span>
+                <input type="text" id="f-symbol" class="filter-input filter-sym" placeholder="e.g. LINKUSDT" oninput="applyFilters()" />
+                <button class="btn-csv" onclick="exportCSV()">⬇ Export CSV</button>
             </div>
-            <div class="table-wrap">
-                <table>
-                    <thead><tr>
-                        <th>Time</th><th>Symbol</th><th>Action</th><th>Pattern</th>
-                        <th>Entry</th><th>Trigger</th><th>TP</th><th>TP%</th>
-                        <th>Status</th><th>Order ID</th>
-                    </tr></thead>
-                    <tbody id="tbody-today"></tbody>
-                </table>
-            </div>
-        </div>
-
-        <!-- ══ Signal History ════════════════════════════════════════════════ -->
-        <div class="panel">
-            <div class="panel-header">
-                <span class="panel-title">Signal History</span>
-                <span class="pill" id="pill-history">0</span>
-            </div>
-            <div class="table-wrap">
-                <table>
-                    <thead><tr>
-                        <th>Date &amp; Time</th><th>Symbol</th><th>Action</th><th>Pattern</th>
-                        <th>Entry</th><th>Trigger</th><th>TP</th><th>TP%</th>
-                        <th>Status</th><th>Order ID</th>
-                    </tr></thead>
-                    <tbody id="tbody-history"></tbody>
-                </table>
-            </div>
-        </div>
-
-        <!-- ══ Daily Report ══════════════════════════════════════════════════ -->
-        <div class="panel">
-            <div class="panel-header">
-                <span class="panel-title">Daily Report — <span id="report-date">today</span></span>
-                <span class="pill" id="pill-report">0 signals</span>
-            </div>
-            <div id="breakdown-container"></div>
-        </div>
-
-        <!-- ════════════════════════════════════════════════════════════════════
-             STATISTICS SECTION
-        ═══════════════════════════════════════════════════════════════════════ -->
-        <div class="section-label">Statistics</div>
-
-        <!-- Date filter -->
-        <div class="panel">
-            <div class="date-row">
-                <div class="date-group">
-                    <label>Previous Day</label>
-                    <input type="date" id="stats-prev-day" class="date-input" />
-                </div>
-                <div class="date-group">
-                    <label>Day Before Previous</label>
-                    <input type="date" id="stats-day-before" class="date-input" readonly
-                        style="opacity:0.6;cursor:default" title="Auto-calculated: 1 day before previous" />
-                </div>
-                <button class="btn" onclick="loadStats()">Load Statistics</button>
-                <button class="btn btn-ghost" onclick="resetStatsDates()">Reset</button>
-            </div>
-
-            <!-- Stats table -->
-            <div id="stats-loading" style="padding:2rem;text-align:center;color:var(--muted);font-size:.85rem">
-                Select a date and click Load Statistics
-            </div>
-            <div id="stats-table-container" style="display:none">
-                <div class="stats-table-wrap" id="stats-table-wrap"></div>
+            <!-- Row 2: status / direction / rule / session -->
+            <div class="filter-row">
+                <span class="filter-label">Status</span>
+                <select id="f-status" class="filter-select" onchange="applyFilters()">
+                    <option value="all">All</option>
+                    <option value="open">Open</option>
+                    <option value="active">Active</option>
+                    <option value="filled">Filled</option>
+                    <option value="completed">Completed</option>
+                    <option value="failed">Failed</option>
+                </select>
+                <div class="filter-sep"></div>
+                <span class="filter-label">Direction</span>
+                <select id="f-direction" class="filter-select" onchange="applyFilters()">
+                    <option value="all">All</option>
+                    <option value="buy">Buy</option>
+                    <option value="sell">Sell</option>
+                </select>
+                <div class="filter-sep"></div>
+                <span class="filter-label">Rule</span>
+                <select id="f-rule" class="filter-select" onchange="applyFilters()">
+                    <option value="all">All</option>
+                    <option value="STD">STD</option>
+                    <option value="OB">OB</option>
+                    <option value="REV">REV</option>
+                    <option value="Unknown">Unknown</option>
+                </select>
+                <div class="filter-sep"></div>
+                <span class="filter-label">Session</span>
+                <select id="f-session" class="filter-select" onchange="applyFilters()">
+                    <option value="all">All</option>
+                    <option value="Sydney">Sydney</option>
+                    <option value="Tokyo">Tokyo</option>
+                    <option value="Pre-London">Pre-London</option>
+                    <option value="London">London</option>
+                    <option value="London/NY">London/NY</option>
+                    <option value="New York">New York</option>
+                </select>
             </div>
         </div>
 
-        <!-- Summary cards -->
-        <div class="panel">
-            <div class="panel-header">
-                <span class="panel-title">Best Performance (last 30 days)</span>
-            </div>
-            <div class="summary-cards" id="summary-cards">
-                <div class="summary-card">
-                    <div class="summary-card-label">Best Direction</div>
-                    <div class="summary-card-value" id="sum-direction">—</div>
-                    <div class="summary-card-sub">most completed trades</div>
-                </div>
-                <div class="summary-card">
-                    <div class="summary-card-label">Best Rule</div>
-                    <div class="summary-card-value" id="sum-rule">—</div>
-                    <div class="summary-card-sub">highest same-day rate</div>
-                </div>
-                <div class="summary-card">
-                    <div class="summary-card-label">Best Session</div>
-                    <div class="summary-card-value" id="sum-session">—</div>
-                    <div class="summary-card-sub">highest same-day rate</div>
-                </div>
-                <div class="summary-card">
-                    <div class="summary-card-label">Best Combination</div>
-                    <div class="summary-card-value" id="sum-combo" style="font-size:0.9rem">—</div>
-                    <div class="summary-card-sub">direction · rule · session</div>
-                </div>
-            </div>
+        <!-- Table -->
+        <div class="table-wrap">
+            <table id="signals-table">
+                <thead>
+                    <tr>
+                        <th class="sortable" data-col="timestamp">Date &amp; Time</th>
+                        <th class="sortable" data-col="symbol">Symbol</th>
+                        <th class="sortable" data-col="action">Direction</th>
+                        <th>Pattern</th>
+                        <th>Session</th>
+                        <th class="sortable" data-col="price">Entry</th>
+                        <th class="sortable" data-col="take_profit">TP</th>
+                        <th>TP %</th>
+                        <th class="sortable" data-col="status">Status</th>
+                        <th>Filled</th>
+                        <th>Completed</th>
+                        <th>Order ID</th>
+                    </tr>
+                </thead>
+                <tbody id="tbody-signals">
+                    <tr class="empty-row"><td colspan="12">Loading…</td></tr>
+                </tbody>
+            </table>
         </div>
 
-        <!-- Day-by-day filter -->
-        <div class="section-label">Day Filter</div>
-        <div class="panel">
-            <div class="date-row">
-                <div class="date-group">
-                    <label>Show signals for date</label>
-                    <input type="date" id="day-filter-date" class="date-input" />
-                </div>
-                <button class="btn" onclick="loadDaySignals()">Load</button>
-                <button class="btn btn-ghost" onclick="clearDayFilter()">Clear</button>
-            </div>
-            <div class="panel-header" style="border-top:1px solid var(--border)">
-                <span class="panel-title">Filtered Signals — <span id="day-filter-label">—</span></span>
-                <span class="pill" id="pill-day-filter">0</span>
-            </div>
-            <div class="table-wrap">
-                <table>
-                    <thead><tr>
-                        <th>Time</th><th>Symbol</th><th>Action</th><th>Pattern</th>
-                        <th>Entry</th><th>Trigger</th><th>TP</th><th>TP%</th>
-                        <th>Status</th><th>Fill Time</th><th>Completed</th><th>Order ID</th>
-                    </tr></thead>
-                    <tbody id="tbody-day-filter">
-                        <tr class="empty-row"><td colspan="12">Select a date above</td></tr>
-                    </tbody>
-                </table>
-            </div>
+        <!-- Pagination -->
+        <div class="pagination">
+            <span class="count" id="pg-count">Showing 0 signals</span>
+            <button class="page-btn" id="pg-prev" onclick="changePage(-1)" disabled>← Prev</button>
+            <span class="page-info" id="pg-info">1 / 1</span>
+            <button class="page-btn" id="pg-next" onclick="changePage(1)" disabled>Next →</button>
         </div>
+    </div>
 
-    </main>
+    <!-- ══════════════════════════════════════════════════════════════
+         STATISTICS
+    ════════════════════════════════════════════════════════════════ -->
+    <div class="section-label">Statistics</div>
 
-    <script>
-        const INTERVAL = 30;
-        let countdown = INTERVAL;
-        let tickTimer = null;
+    <!-- Stats date filter + table -->
+    <div class="panel">
+        <div class="date-row">
+            <div class="date-group">
+                <label>Previous Day</label>
+                <input type="date" id="stats-prev-day" class="date-input" />
+            </div>
+            <div class="date-group">
+                <label>Day Before Previous</label>
+                <input type="date" id="stats-day-before" class="date-input" readonly style="opacity:.6;cursor:default" title="Auto-calculated" />
+            </div>
+            <button class="btn" onclick="loadStats()">Load</button>
+            <button class="btn btn-ghost" onclick="resetStatsDates()">Reset</button>
+        </div>
+        <div id="stats-loading" style="padding:2rem;text-align:center;color:var(--muted);font-size:.85rem">
+            Select a date and click Load
+        </div>
+        <div id="stats-table-container" style="display:none">
+            <div class="stats-table-wrap" id="stats-table-wrap"></div>
+        </div>
+    </div>
 
-        // ── Formatters ────────────────────────────────────────────────────────
+    <!-- Best-performance insight cards -->
+    <div class="panel">
+        <div class="panel-header"><span class="panel-title">Best Performance — last 30 days</span></div>
+        <div class="insight-cards">
+            <div class="ic"><div class="ic-label">Best Direction</div><div class="ic-value" id="sum-direction">—</div><div class="ic-sub">most completed trades</div></div>
+            <div class="ic"><div class="ic-label">Best Rule</div><div class="ic-value" id="sum-rule">—</div><div class="ic-sub">highest same-day rate</div></div>
+            <div class="ic"><div class="ic-label">Best Session</div><div class="ic-value" id="sum-session">—</div><div class="ic-sub">highest same-day rate</div></div>
+            <div class="ic"><div class="ic-label">Best Combination</div><div class="ic-value" id="sum-combo" style="font-size:.9rem">—</div><div class="ic-sub">direction · rule · session</div></div>
+        </div>
+    </div>
 
-        function fmtTime(ts) {
-            if (!ts) return '—';
-            const p = ts.replace('T', ' ').split(/[- :]/);
-            const sec = (p[5] || '00').split('.')[0];  // strip microseconds
-            return `${p[3]}:${p[4]}:${sec}`;
-        }
+</main>
 
-        function fmtDateTime(ts) {
-            if (!ts) return '—';
-            const p = ts.replace('T', ' ').split(/[- :]/);
-            const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][parseInt(p[1])-1]||'';
-            return `${mon} ${parseInt(p[2])} ${p[3]}:${p[4]}`;
-        }
+<script>
+// ── Constants & state ────────────────────────────────────────────────────────
+const PAGE_SIZE = 25;
+const INTERVAL  = 30;
 
-        function badge(cls, text) {
-            return `<span class="badge badge-${cls}">${text}</span>`;
-        }
+let allSignals     = [];
+let filteredSigs   = [];
+let currentPage    = 1;
+let sortCol        = 'timestamp';
+let sortAsc        = false;
+let countdown      = INTERVAL;
+let tickTimer      = null;
 
-        function orderId(id) {
-            if (!id) return '<span class="dim">—</span>';
-            return `<span class="mono order-id" title="${id}">${id}</span>`;
-        }
+// ── Session classifier (mirrors Python utils/session.py) ────────────────────
+function beirutToUtcHour(ts) {
+    // ts is naive Beirut time string "YYYY-MM-DDTHH:MM:SS..."
+    // Beirut DST: roughly April–October = UTC+3, else UTC+2
+    const month = parseInt(ts.slice(5, 7));
+    const offset = (month >= 4 && month <= 10) ? 3 : 2;
+    let h = parseInt(ts.slice(11, 13)) - offset;
+    if (h < 0)  h += 24;
+    if (h >= 24) h -= 24;
+    return h;
+}
 
-        function fmtPrice(val) {
-            if (val === null || val === undefined) return '<span class="dim">—</span>';
-            return `<span class="mono">${val}</span>`;
-        }
+function classifySessions(ts) {
+    if (!ts) return [];
+    const h = beirutToUtcHour(ts);
+    const s = [];
+    if (h >= 22 || h < 7)   s.push('Sydney');
+    if (h >= 0  && h < 9)   s.push('Tokyo');
+    if (h >= 6  && h < 8)   s.push('Pre-London');
+    if (h >= 7  && h < 16)  s.push('London');
+    if (h >= 12 && h < 16)  s.push('London/NY');
+    if (h >= 12 && h < 21)  s.push('New York');
+    return s.length ? s : ['Off-Hours'];
+}
 
-        function fmtPattern(pt) {
-            if (!pt) return '<span class="dim">—</span>';
-            return `<span class="mono dim">${pt}</span>`;
-        }
+const SESSION_CSS = {
+    'Sydney':     'stag-sydney',
+    'Tokyo':      'stag-tokyo',
+    'Pre-London': 'stag-prelondon',
+    'London':     'stag-london',
+    'London/NY':  'stag-londonny',
+    'New York':   'stag-newyork',
+    'Off-Hours':  'stag-offhours',
+};
 
-        function fmtTpPercent(entry, tp) {
-            if (!entry || !tp) return '<span class="dim">—</span>';
-            const pct = ((tp / entry) - 1) * 100;
-            const sign = pct >= 0 ? '+' : '';
-            const col = pct >= 0 ? 'var(--green)' : 'var(--red)';
-            return `<span class="mono" style="color:${col}">${sign}${pct.toFixed(2)}%</span>`;
-        }
+function sessionTags(ts) {
+    return classifySessions(ts)
+        .map(s => `<span class="stag ${SESSION_CSS[s]||'stag-offhours'}">${s}</span>`)
+        .join('');
+}
 
-        // ── Table renderers ───────────────────────────────────────────────────
+// ── Rule extraction ──────────────────────────────────────────────────────────
+function extractRule(pt) {
+    if (!pt) return 'Unknown';
+    const parts = pt.toUpperCase().split('_');
+    for (const r of ['STD', 'OB', 'REV']) if (parts.includes(r)) return r;
+    return 'Unknown';
+}
 
-        function renderRows(signals, useDateTime = false) {
-            if (!signals.length) {
-                return '<tr class="empty-row"><td colspan="10">No signals yet</td></tr>';
-            }
-            return signals.map(s => `
-              <tr>
-                <td class="mono dim">${useDateTime ? fmtDateTime(s.timestamp) : fmtTime(s.timestamp)}</td>
-                <td class="sym">${s.symbol}</td>
-                <td>${badge(s.action, s.action)}</td>
-                <td>${fmtPattern(s.pattern_type)}</td>
-                <td>${fmtPrice(s.price)}</td>
-                <td>${fmtPrice(s.trigger_price)}</td>
-                <td>${fmtPrice(s.take_profit)}</td>
-                <td>${fmtTpPercent(s.price, s.take_profit)}</td>
-                <td>${badge(s.status, s.status)}</td>
-                <td>${orderId(s.order_id)}</td>
-              </tr>
-            `).join('');
-        }
+// ── Date helpers ─────────────────────────────────────────────────────────────
+function _localIso(d) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+}
+const isoToday     = () => _localIso(new Date());
+const isoYesterday = () => { const d = new Date(); d.setDate(d.getDate()-1); return _localIso(d); };
+function isoDayBefore(prev) {
+    const d = new Date(prev + 'T00:00:00');
+    d.setDate(d.getDate() - 1);
+    return _localIso(d);
+}
 
-        function renderDayRows(signals) {
-            if (!signals.length) {
-                return '<tr class="empty-row"><td colspan="12">No signals for this date</td></tr>';
-            }
-            return signals.map(s => `
-              <tr>
-                <td class="mono dim">${fmtTime(s.timestamp)}</td>
-                <td class="sym">${s.symbol}</td>
-                <td>${badge(s.action, s.action)}</td>
-                <td>${fmtPattern(s.pattern_type)}</td>
-                <td>${fmtPrice(s.price)}</td>
-                <td>${fmtPrice(s.trigger_price)}</td>
-                <td>${fmtPrice(s.take_profit)}</td>
-                <td>${fmtTpPercent(s.price, s.take_profit)}</td>
-                <td>${badge(s.status, s.status)}</td>
-                <td class="mono dim">${fmtTime(s.entry_fill_time)}</td>
-                <td class="mono dim">${fmtTime(s.completion_time)}</td>
-                <td>${orderId(s.order_id)}</td>
-              </tr>
-            `).join('');
-        }
+// ── Formatters ───────────────────────────────────────────────────────────────
+function fmtTime(ts) {
+    if (!ts) return '<span class="dim">—</span>';
+    const p = ts.replace('T',' ').split(/[- :]/);
+    const sec = (p[5]||'00').split('.')[0];
+    return `<span class="mono dim">${p[3]}:${p[4]}:${sec}</span>`;
+}
 
-        function renderBreakdown(rows) {
-            if (!rows.length) {
-                return '<div style="padding:2rem;text-align:center;color:var(--muted);font-size:.85rem">No data for today</div>';
-            }
-            const bySymbol = {};
-            for (const r of rows) {
-                (bySymbol[r.symbol] = bySymbol[r.symbol] || []).push(r);
-            }
-            return `<div class="breakdown-grid">${Object.entries(bySymbol).map(([symbol, entries]) => {
-                const totalNotional = entries.reduce((s, r) => s + (r.notional || 0), 0);
-                return `
-                  <div class="bk-card">
-                    <div class="bk-symbol">${symbol}</div>
-                    ${entries.map(r => `
-                      <div class="bk-row">
-                        <span>${badge(r.action, r.action)} ${badge(r.status, r.status)}</span>
-                        <span>${r.count} signal${r.count !== 1 ? 's' : ''}</span>
-                      </div>
-                    `).join('')}
-                    ${totalNotional > 0 ? `
-                      <div class="bk-notional">
-                        <span>Notional</span>
-                        <span>$${totalNotional.toLocaleString(undefined, {minimumFractionDigits:2,maximumFractionDigits:2})}</span>
-                      </div>` : ''}
-                  </div>
-                `;
-            }).join('')}</div>`;
-        }
+function fmtDateTime(ts) {
+    if (!ts) return '<span class="dim">—</span>';
+    const p = ts.replace('T',' ').split(/[- :]/);
+    const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][parseInt(p[1])-1]||'';
+    return `<span class="mono">${mon} ${parseInt(p[2])} ${p[3]}:${p[4]}</span>`;
+}
 
-        // ── Stats helpers ─────────────────────────────────────────────────────
+function badge(cls, text) { return `<span class="badge badge-${cls}">${text}</span>`; }
 
-        function rateClass(rate) {
-            if (rate === 0) return 'rate-none';
-            if (rate >= 70)  return 'rate-green';
-            if (rate >= 40)  return 'rate-amber';
-            return 'rate-red';
-        }
+function fmtPrice(v) {
+    if (v == null) return '<span class="dim">—</span>';
+    return `<span class="mono">${v}</span>`;
+}
 
-        function renderStatCell(cell, prevLabel, beforeLabel) {
-            if (!cell) cell = {};
-            const prev = cell;
-            function col(label, prevVal, beforeVal) {
-                return `<div class="stat-line"><span>${label}</span><span>${prevVal ?? 0}</span></div>`;
-            }
-            function colB(label, prevVal, beforeVal) {
-                return `<div class="stat-line"><span>${label}</span><span>${beforeVal ?? 0}</span></div>`;
-            }
-            const rp = cell.rate_prev   ?? 0;
-            const rb = cell.rate_before ?? 0;
-            return `
-              <div class="stat-cell-inner">
-                <div class="stat-col">
-                  <div class="stat-col-head">${prevLabel}</div>
-                  <div class="stat-line"><span class="dim">Open</span><span>${cell.unactive_prev ?? 0}</span></div>
-                  <div class="stat-line"><span class="dim">Active</span><span>${cell.active_prev ?? 0}</span></div>
-                  <div class="stat-line"><span class="dim">Same✓</span><span>${cell.completed_same_prev ?? 0}</span></div>
-                  <div class="stat-line"><span class="dim">Carry</span><span>${cell.completed_carried_prev ?? 0}</span></div>
-                  <div class="stat-rate ${rateClass(rp)}">${rp}%</div>
-                </div>
-                <div class="stat-col">
-                  <div class="stat-col-head">${beforeLabel}</div>
-                  <div class="stat-line"><span class="dim">Open</span><span>${cell.unactive_before ?? 0}</span></div>
-                  <div class="stat-line"><span class="dim">Active</span><span>${cell.active_before ?? 0}</span></div>
-                  <div class="stat-line"><span class="dim">Same✓</span><span>${cell.completed_same_before ?? 0}</span></div>
-                  <div class="stat-line"><span class="dim">Carry</span><span>${cell.completed_carried_before ?? 0}</span></div>
-                  <div class="stat-rate ${rateClass(rb)}">${rb}%</div>
-                </div>
-              </div>`;
-        }
+function fmtTpPct(entry, tp) {
+    if (!entry || !tp) return '<span class="dim">—</span>';
+    const pct = ((tp / entry) - 1) * 100;
+    const sign = pct >= 0 ? '+' : '';
+    const col  = pct >= 0 ? 'var(--green)' : 'var(--red)';
+    return `<span class="mono tp-pct" style="color:${col}">${sign}${pct.toFixed(2)}%</span>`;
+}
 
-        function renderStatsTable(data) {
-            const sessions  = [...(data.sessions || []), 'Overall'];
-            const prevShort = data.prev_day?.slice(5)   || '—';
-            const bfShort   = data.day_before?.slice(5) || '—';
+function fmtOrderId(id) {
+    if (!id) return '<span class="dim">—</span>';
+    return `<span class="mono order-id" title="${id}">${id}</span>`;
+}
 
-            let html = `<table class="stats-table">
-              <thead><tr>
-                <th class="row-label">Direction / Rule</th>
-                ${sessions.map(s => `<th>${s}</th>`).join('')}
-              </tr></thead>
-              <tbody>`;
+// ── Filter & sort ─────────────────────────────────────────────────────────────
+function applyFilters() {
+    const from    = document.getElementById('f-from').value;
+    const to      = document.getElementById('f-to').value;
+    const symbol  = document.getElementById('f-symbol').value.trim().toUpperCase();
+    const status  = document.getElementById('f-status').value;
+    const dir     = document.getElementById('f-direction').value;
+    const rule    = document.getElementById('f-rule').value;
+    const session = document.getElementById('f-session').value;
 
-            for (const row of (data.rows || [])) {
-                const dirLabel = row.direction === 'long'
-                    ? '<span style="color:var(--green)">▲ Long</span>'
-                    : '<span style="color:var(--red)">▼ Short</span>';
-                html += `<tr>
-                  <td class="row-label-cell">${dirLabel} <span class="dim">${row.rule}</span></td>
-                  ${sessions.map(s => `
-                    <td class="stat-cell">
-                      ${renderStatCell(row.cells?.[s], prevShort, bfShort)}
-                    </td>`).join('')}
-                </tr>`;
-            }
+    filteredSigs = allSignals.filter(s => {
+        const d = (s.timestamp || '').slice(0, 10);
+        if (from   && d < from) return false;
+        if (to     && d > to)   return false;
+        if (symbol && !s.symbol?.includes(symbol)) return false;
+        if (status !== 'all' && s.status !== status) return false;
+        if (dir    !== 'all' && s.action !== dir)   return false;
+        if (rule   !== 'all' && extractRule(s.pattern_type) !== rule) return false;
+        if (session !== 'all' && !classifySessions(s.timestamp).includes(session)) return false;
+        return true;
+    });
 
-            // Totals row
-            html += `<tr>
-              <td class="row-label-cell" style="color:var(--indigo)">TOTAL</td>
-              ${sessions.map(s => `
-                <td class="stat-cell">
-                  ${renderStatCell(data.totals?.[s], prevShort, bfShort)}
-                </td>`).join('')}
+    // Sort
+    filteredSigs.sort((a, b) => {
+        let av = a[sortCol], bv = b[sortCol];
+        if (av == null) av = '';
+        if (bv == null) bv = '';
+        if (typeof av === 'string') av = av.toLowerCase();
+        if (typeof bv === 'string') bv = bv.toLowerCase();
+        if (av < bv) return sortAsc ?  -1 : 1;
+        if (av > bv) return sortAsc ?   1 : -1;
+        return 0;
+    });
+
+    currentPage = 1;
+    renderTable();
+}
+
+function setDateRange(preset) {
+    // Update quick-button active state
+    document.querySelectorAll('.qbtn').forEach(b => b.classList.remove('active'));
+    document.getElementById('qbtn-all').classList.remove('active');
+    event?.target?.classList.add('active');
+
+    const today = isoToday();
+    const yest  = isoYesterday();
+    const from  = document.getElementById('f-from');
+    const to    = document.getElementById('f-to');
+
+    if (preset === 'today') {
+        from.value = today; to.value = today;
+    } else if (preset === 'yesterday') {
+        from.value = yest; to.value = yest;
+    } else if (preset === '7d') {
+        const d = new Date(); d.setDate(d.getDate() - 6);
+        from.value = _localIso(d); to.value = today;
+    } else {
+        from.value = ''; to.value = '';
+    }
+    applyFilters();
+}
+
+// ── Sort ─────────────────────────────────────────────────────────────────────
+document.querySelectorAll('th.sortable').forEach(th => {
+    th.addEventListener('click', () => {
+        const col = th.dataset.col;
+        if (sortCol === col) { sortAsc = !sortAsc; }
+        else { sortCol = col; sortAsc = col !== 'timestamp'; }
+        document.querySelectorAll('th').forEach(h => h.classList.remove('sort-asc','sort-desc'));
+        th.classList.add(sortAsc ? 'sort-asc' : 'sort-desc');
+        applyFilters();
+    });
+});
+
+// ── Render table ──────────────────────────────────────────────────────────────
+function renderTable() {
+    const total = filteredSigs.length;
+    const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    currentPage = Math.min(currentPage, pages);
+
+    const start = (currentPage - 1) * PAGE_SIZE;
+    const slice = filteredSigs.slice(start, start + PAGE_SIZE);
+
+    const tbody = document.getElementById('tbody-signals');
+    if (!slice.length) {
+        tbody.innerHTML = '<tr class="empty-row"><td colspan="12">No signals match the current filters</td></tr>';
+    } else {
+        tbody.innerHTML = slice.map(s => {
+            const tpCell = s.take_profit != null
+                ? `<div class="tp-cell">${fmtPrice(s.take_profit)}${fmtTpPct(s.price, s.take_profit)}</div>`
+                : '<span class="dim">—</span>';
+            return `<tr>
+              <td>${fmtDateTime(s.timestamp)}</td>
+              <td class="sym">${s.symbol}</td>
+              <td>${badge(s.action, s.action)}</td>
+              <td class="mono dim" style="font-size:.75rem">${s.pattern_type || '<span class="dim">—</span>'}</td>
+              <td style="white-space:nowrap">${sessionTags(s.timestamp)}</td>
+              <td>${fmtPrice(s.price ?? s.trigger_price)}</td>
+              <td>${tpCell}</td>
+              <td>${fmtTpPct(s.price, s.take_profit)}</td>
+              <td>${badge(s.status, s.status)}</td>
+              <td>${fmtTime(s.entry_fill_time)}</td>
+              <td>${fmtTime(s.completion_time)}</td>
+              <td>${fmtOrderId(s.order_id)}</td>
             </tr>`;
+        }).join('');
+    }
 
-            html += '</tbody></table>';
-            return html;
+    // Pagination controls
+    const end = Math.min(start + PAGE_SIZE, total);
+    document.getElementById('pg-count').textContent =
+        total ? `Showing ${start + 1}–${end} of ${total} signal${total !== 1 ? 's' : ''}` : 'No signals';
+    document.getElementById('pg-info').textContent  = `${currentPage} / ${pages}`;
+    document.getElementById('pg-prev').disabled = currentPage <= 1;
+    document.getElementById('pg-next').disabled = currentPage >= pages;
+}
+
+function changePage(delta) {
+    currentPage += delta;
+    renderTable();
+    window.scrollTo({ top: document.querySelector('#signals-table').offsetTop - 80, behavior: 'smooth' });
+}
+
+// ── Export CSV ────────────────────────────────────────────────────────────────
+function exportCSV() {
+    const headers = ['Date','Symbol','Action','Pattern','Rule','Session','Entry','TP','TP%','Status','Fill Time','Completion','Order ID'];
+    const rows = filteredSigs.map(s => {
+        const sessions = classifySessions(s.timestamp).join('; ');
+        const rule     = extractRule(s.pattern_type);
+        const tpPct    = (s.price && s.take_profit) ? ((s.take_profit / s.price - 1) * 100).toFixed(2) : '';
+        return [
+            s.timestamp || '', s.symbol || '', s.action || '', s.pattern_type || '',
+            rule, sessions,
+            s.price ?? s.trigger_price ?? '', s.take_profit || '', tpPct,
+            s.status || '', s.entry_fill_time || '', s.completion_time || '', s.order_id || '',
+        ];
+    });
+    const csv = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+    const a = Object.assign(document.createElement('a'), {
+        href: URL.createObjectURL(new Blob([csv], {type:'text/csv'})),
+        download: `signals_${isoToday()}.csv`,
+    });
+    a.click();
+    URL.revokeObjectURL(a.href);
+}
+
+// ── Daily report ──────────────────────────────────────────────────────────────
+function renderBreakdown(rows) {
+    if (!rows.length) return '<div style="padding:2rem;text-align:center;color:var(--muted);font-size:.85rem">No data for today</div>';
+    const bySymbol = {};
+    for (const r of rows) (bySymbol[r.symbol] = bySymbol[r.symbol] || []).push(r);
+    return `<div class="breakdown-grid">${Object.entries(bySymbol).map(([sym, entries]) => {
+        const notional = entries.reduce((s,r) => s + (r.notional||0), 0);
+        return `<div class="bk-card">
+          <div class="bk-symbol">${sym}</div>
+          ${entries.map(r => `<div class="bk-row"><span>${badge(r.action,r.action)} ${badge(r.status,r.status)}</span><span>${r.count} sig${r.count!==1?'s':''}</span></div>`).join('')}
+          ${notional > 0 ? `<div class="bk-notional"><span>Notional</span><span>$${notional.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span></div>` : ''}
+        </div>`;
+    }).join('')}</div>`;
+}
+
+// ── Stats table ───────────────────────────────────────────────────────────────
+function rateClass(r) { return r===0?'rate-none':r>=70?'rate-green':r>=40?'rate-amber':'rate-red'; }
+
+function renderStatCell(cell, pLabel, bLabel) {
+    if (!cell) cell = {};
+    const rp = cell.rate_prev ?? 0, rb = cell.rate_before ?? 0;
+    const col = (lbl, p, b) => `
+      <div class="stat-col">
+        <div class="stat-col-head">${lbl}</div>
+        <div class="stat-line"><span class="dim">Open</span><span>${p.unactive??0}</span></div>
+        <div class="stat-line"><span class="dim">Act</span><span>${p.active??0}</span></div>
+        <div class="stat-line"><span class="dim">Same✓</span><span>${p.same??0}</span></div>
+        <div class="stat-line"><span class="dim">Carry</span><span>${p.carry??0}</span></div>
+        <div class="stat-rate ${rateClass(p.rate??0)}">${p.rate??0}%</div>
+      </div>`;
+    return `<div class="stat-cell-inner">
+      ${col(pLabel, {unactive:cell.unactive_prev, active:cell.active_prev, same:cell.completed_same_prev, carry:cell.completed_carried_prev, rate:rp})}
+      ${col(bLabel, {unactive:cell.unactive_before, active:cell.active_before, same:cell.completed_same_before, carry:cell.completed_carried_before, rate:rb})}
+    </div>`;
+}
+
+function renderStatsTable(data) {
+    const sessions  = [...(data.sessions||[]), 'Overall'];
+    const pL = data.prev_day?.slice(5)   || '—';
+    const bL = data.day_before?.slice(5) || '—';
+    let html = `<table class="stats-table"><thead><tr>
+      <th class="row-label">Direction / Rule</th>
+      ${sessions.map(s=>`<th>${s}</th>`).join('')}
+    </tr></thead><tbody>`;
+    for (const row of (data.rows||[])) {
+        const dirLabel = row.direction==='long'
+            ? `<span style="color:var(--green)">▲ Long</span>`
+            : `<span style="color:var(--red)">▼ Short</span>`;
+        html += `<tr>
+          <td class="row-label-cell">${dirLabel} <span class="dim">${row.rule}</span></td>
+          ${sessions.map(s=>`<td class="stat-cell">${renderStatCell(row.cells?.[s],pL,bL)}</td>`).join('')}
+        </tr>`;
+    }
+    html += `<tr>
+      <td class="row-label-cell" style="color:var(--indigo)">TOTAL</td>
+      ${sessions.map(s=>`<td class="stat-cell">${renderStatCell(data.totals?.[s],pL,bL)}</td>`).join('')}
+    </tr>`;
+    return html + '</tbody></table>';
+}
+
+// ── Stats date controls ───────────────────────────────────────────────────────
+function resetStatsDates() {
+    const prev = isoYesterday();
+    document.getElementById('stats-prev-day').value   = prev;
+    document.getElementById('stats-day-before').value = isoDayBefore(prev);
+}
+
+document.getElementById('stats-prev-day').addEventListener('change', function() {
+    if (this.value) document.getElementById('stats-day-before').value = isoDayBefore(this.value);
+});
+
+async function loadStats() {
+    const prevDay = document.getElementById('stats-prev-day').value;
+    if (!prevDay) { alert('Please select a date.'); return; }
+    const loading   = document.getElementById('stats-loading');
+    const container = document.getElementById('stats-table-container');
+    loading.textContent = 'Loading…'; loading.style.display = 'block'; container.style.display = 'none';
+    try {
+        const data = await fetch(`/dashboard/stats/table?date=${prevDay}`).then(r=>r.json());
+        document.getElementById('stats-table-wrap').innerHTML = renderStatsTable(data);
+        loading.style.display = 'none'; container.style.display = 'block';
+    } catch(e) { loading.textContent = 'Failed: ' + e.message; }
+}
+
+async function loadSummary() {
+    try {
+        const d = await fetch('/dashboard/stats/summary').then(r=>r.json());
+        document.getElementById('sum-direction').textContent = d.best_direction || '—';
+        document.getElementById('sum-rule').textContent      = d.best_rule      || '—';
+        document.getElementById('sum-session').textContent   = d.best_session   || '—';
+        if (d.best_combination) {
+            const bc = d.best_combination;
+            document.getElementById('sum-combo').textContent = `${bc.direction} · ${bc.rule} · ${bc.session}`;
         }
+    } catch(e) { console.warn('Summary failed:', e); }
+}
 
-        // ── Stats date controls ───────────────────────────────────────────────
+// ── Main refresh ──────────────────────────────────────────────────────────────
+async function refresh() {
+    const info = document.getElementById('updated-at');
+    info.innerHTML = '<span class="status-dot loading" id="dot"></span>Updating…';
 
-        function _localIso(d) {
-            // Format YYYY-MM-DD using LOCAL date parts — avoids UTC-offset shift from toISOString()
-            const y = d.getFullYear();
-            const m = String(d.getMonth() + 1).padStart(2, '0');
-            const day = String(d.getDate()).padStart(2, '0');
-            return `${y}-${m}-${day}`;
-        }
+    try {
+        const [allRes, reportRes, statsRes] = await Promise.all([
+            fetch('/dashboard/signals'),
+            fetch('/dashboard/report/daily'),
+            fetch('/dashboard/stats'),
+        ]);
+        if (!allRes.ok || !reportRes.ok || !statsRes.ok) throw new Error('Request failed');
 
-        function isoToday() {
-            return _localIso(new Date());
-        }
+        const [allData, report, stats] = await Promise.all([allRes.json(), reportRes.json(), statsRes.json()]);
+        allSignals = allData.signals || [];
 
-        function isoYesterday() {
-            const d = new Date(); d.setDate(d.getDate() - 1);
-            return _localIso(d);
-        }
+        // Summary cards
+        const todayStr   = isoToday();
+        const todayCount = allSignals.filter(s => (s.timestamp||'').startsWith(todayStr)).length;
+        document.getElementById('card-total').textContent     = allData.total;
+        document.getElementById('card-today').textContent     = todayCount;
+        document.getElementById('card-open').textContent      = allSignals.filter(s=>s.status==='open').length;
+        document.getElementById('card-active').textContent    = allSignals.filter(s=>s.status==='active').length;
+        document.getElementById('card-completed').textContent = allSignals.filter(s=>s.status==='completed').length;
+        document.getElementById('card-failed-card').textContent = allSignals.filter(s=>s.status==='failed').length;
+        const last = allSignals[0];
+        document.getElementById('card-last').textContent = last
+            ? (last.timestamp||'').replace('T',' ').slice(0,16) : '—';
 
-        function isoDayBefore(prevDay) {
-            const d = new Date(prevDay + 'T00:00:00');
-            d.setDate(d.getDate() - 1);
-            return _localIso(d);
-        }
+        // Performance
+        document.getElementById('perf-winrate').textContent      = stats.win_rate + '%';
+        document.getElementById('perf-ratio').textContent        = `${stats.filled} filled / ${stats.total_signals} total`;
+        document.getElementById('perf-filled').textContent       = stats.filled;
+        document.getElementById('perf-failed').textContent       = stats.failed;
+        document.getElementById('perf-filled-today').textContent = stats.total_filled_today;
+        document.getElementById('perf-failed-today').textContent = stats.total_failed_today;
 
-        function resetStatsDates() {
-            const prev = isoYesterday();
-            document.getElementById('stats-prev-day').value   = prev;
-            document.getElementById('stats-day-before').value = isoDayBefore(prev);
-        }
+        // Daily report
+        document.getElementById('report-date').textContent  = report.date;
+        document.getElementById('pill-report').textContent  = `${report.total_signals} signal${report.total_signals!==1?'s':''}`;
+        document.getElementById('breakdown-container').innerHTML = renderBreakdown(report.breakdown);
 
-        document.getElementById('stats-prev-day').addEventListener('change', function() {
-            if (this.value) {
-                document.getElementById('stats-day-before').value = isoDayBefore(this.value);
-            }
-        });
+        // Signals pill + apply current filters to new data
+        document.getElementById('pill-signals').textContent = allData.total;
+        applyFilters();
 
-        async function loadStats() {
-            const prevDay = document.getElementById('stats-prev-day').value;
-            if (!prevDay) { alert('Please select a date.'); return; }
+        const now = new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+        info.innerHTML = `<span class="status-dot" id="dot"></span>Updated ${now}`;
 
-            const loading = document.getElementById('stats-loading');
-            const container = document.getElementById('stats-table-container');
-            loading.textContent = 'Loading…';
-            loading.style.display = 'block';
-            container.style.display = 'none';
+    } catch(err) {
+        info.innerHTML = `<span class="status-dot error" id="dot"></span>Error: ${err.message}`;
+    }
+}
 
-            try {
-                const res  = await fetch(`/dashboard/stats/table?date=${prevDay}`);
-                const data = await res.json();
-                document.getElementById('stats-table-wrap').innerHTML = renderStatsTable(data);
-                loading.style.display  = 'none';
-                container.style.display = 'block';
-            } catch (e) {
-                loading.textContent = 'Failed to load stats: ' + e.message;
-            }
-        }
-
-        async function loadSummary() {
-            try {
-                const res  = await fetch('/dashboard/stats/summary');
-                const data = await res.json();
-                document.getElementById('sum-direction').textContent = data.best_direction || '—';
-                document.getElementById('sum-rule').textContent      = data.best_rule      || '—';
-                document.getElementById('sum-session').textContent   = data.best_session   || '—';
-                if (data.best_combination) {
-                    const bc = data.best_combination;
-                    document.getElementById('sum-combo').textContent =
-                        `${bc.direction} · ${bc.rule} · ${bc.session}`;
-                }
-            } catch (e) {
-                console.warn('Summary load failed:', e);
-            }
-        }
-
-        // ── Day filter ────────────────────────────────────────────────────────
-
-        async function loadDaySignals() {
-            const d = document.getElementById('day-filter-date').value;
-            if (!d) { alert('Please select a date.'); return; }
-            try {
-                const res  = await fetch(`/dashboard/daily?date=${d}`);
-                const data = await res.json();
-                document.getElementById('day-filter-label').textContent = d;
-                document.getElementById('pill-day-filter').textContent  = data.total;
-                document.getElementById('tbody-day-filter').innerHTML   = renderDayRows(data.signals);
-            } catch (e) {
-                console.warn('Day filter load failed:', e);
-            }
-        }
-
-        function clearDayFilter() {
-            document.getElementById('day-filter-date').value = '';
-            document.getElementById('day-filter-label').textContent = '—';
-            document.getElementById('pill-day-filter').textContent  = '0';
-            document.getElementById('tbody-day-filter').innerHTML =
-                '<tr class="empty-row"><td colspan="12">Select a date above</td></tr>';
-        }
-
-        // ── Main refresh ──────────────────────────────────────────────────────
-
-        async function refresh() {
-            const dot  = document.getElementById('dot');
-            const info = document.getElementById('updated-at');
-            dot.className = 'status-dot loading';
-            info.innerHTML = '<span class="status-dot loading" id="dot"></span>Updating…';
-
-            try {
-                const [allRes, todayRes, historyRes, reportRes, statsRes] = await Promise.all([
-                    fetch('/dashboard/signals'),
-                    fetch('/dashboard/signals/today'),
-                    fetch('/dashboard/signals/history'),
-                    fetch('/dashboard/report/daily'),
-                    fetch('/dashboard/stats'),
-                ]);
-
-                if (!allRes.ok || !todayRes.ok || !historyRes.ok || !reportRes.ok || !statsRes.ok) {
-                    throw new Error('One or more requests failed');
-                }
-
-                const [all, today, history, report, stats] = await Promise.all([
-                    allRes.json(), todayRes.json(), historyRes.json(), reportRes.json(), statsRes.json(),
-                ]);
-
-                // Performance panel
-                document.getElementById('perf-winrate').textContent      = stats.win_rate + '%';
-                document.getElementById('perf-ratio').textContent        = `${stats.filled} filled / ${stats.total_signals} total`;
-                document.getElementById('perf-filled').textContent       = stats.filled;
-                document.getElementById('perf-failed').textContent       = stats.failed;
-                document.getElementById('perf-filled-today').textContent = stats.total_filled_today;
-                document.getElementById('perf-failed-today').textContent = stats.total_failed_today;
-
-                // Cards
-                document.getElementById('card-total').textContent   = all.total;
-                document.getElementById('card-today').textContent   = today.total;
-                document.getElementById('card-history').textContent = history.total;
-                document.getElementById('card-open').textContent    =
-                    all.signals.filter(s => s.status === 'open').length;
-                const lastSig = all.signals[0];
-                document.getElementById('card-last').textContent = lastSig ? fmtTime(lastSig.timestamp) : '—';
-
-                // Today table
-                document.getElementById('pill-today').textContent    = today.total;
-                document.getElementById('tbody-today').innerHTML      = renderRows(today.signals, false);
-
-                // History table
-                document.getElementById('pill-history').textContent  = history.total;
-                document.getElementById('tbody-history').innerHTML    = renderRows(history.signals, true);
-
-                // Daily report
-                document.getElementById('report-date').textContent   = report.date;
-                document.getElementById('pill-report').textContent   = `${report.total_signals} signal${report.total_signals !== 1 ? 's' : ''}`;
-                document.getElementById('breakdown-container').innerHTML = renderBreakdown(report.breakdown);
-
-                // Status indicator
-                const now = new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
-                info.innerHTML = `<span class="status-dot" id="dot"></span>Updated ${now}`;
-
-            } catch (err) {
-                info.innerHTML = `<span class="status-dot error" id="dot"></span>Error: ${err.message}`;
-            }
-        }
-
-        // ── Auto-refresh countdown ────────────────────────────────────────────
-
-        function startCountdown() {
+// ── Auto-refresh countdown ────────────────────────────────────────────────────
+function startCountdown() {
+    clearInterval(tickTimer);
+    countdown = INTERVAL;
+    const el = document.getElementById('next-refresh');
+    tickTimer = setInterval(() => {
+        el.textContent = `Refresh in ${countdown}s`;
+        countdown--;
+        if (countdown < 0) {
             clearInterval(tickTimer);
-            countdown = INTERVAL;
-            const el = document.getElementById('next-refresh');
-            tickTimer = setInterval(() => {
-                el.textContent = `Refresh in ${countdown}s`;
-                countdown--;
-                if (countdown < 0) {
-                    clearInterval(tickTimer);
-                    el.textContent = '';
-                    refresh().then(startCountdown);
-                }
-            }, 1000);
+            el.textContent = '';
+            refresh().then(startCountdown);
         }
+    }, 1000);
+}
 
-        // ── Init ──────────────────────────────────────────────────────────────
+// ── Init ─────────────────────────────────────────────────────────────────────
+// Set default sort indicator on timestamp header
+document.querySelector('th[data-col="timestamp"]').classList.add('sort-desc');
+resetStatsDates();
+refresh().then(startCountdown);
+loadSummary();
 
-        resetStatsDates();
-        refresh().then(startCountdown);
-        loadSummary();
-
-        if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('/dashboard/sw.js', {scope: '/dashboard/'});
-        }
-    </script>
+if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/dashboard/sw.js', {scope:'/dashboard/'});
+}
+</script>
 </body>
-
 </html>
