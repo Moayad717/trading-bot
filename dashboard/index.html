@@ -28,11 +28,7 @@
 
         *,
         *::before,
-        *::after {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
+        *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
         body {
             background: var(--bg);
@@ -45,363 +41,234 @@
 
         /* ── Header ─────────────────────────────────────── */
         header {
-            position: sticky;
-            top: 0;
-            z-index: 10;
+            position: sticky; top: 0; z-index: 10;
             background: var(--surface);
             border-bottom: 1px solid var(--border);
             padding: 0.85rem 2rem;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
+            display: flex; justify-content: space-between; align-items: center;
         }
-
-        .logo {
-            font-size: 1rem;
-            font-weight: 700;
-            letter-spacing: -0.02em;
-            color: var(--text);
-        }
-
-        .logo span {
-            color: var(--indigo);
-        }
-
+        .logo { font-size: 1rem; font-weight: 700; letter-spacing: -0.02em; color: var(--text); }
+        .logo span { color: var(--indigo); }
         .header-meta {
-            display: flex;
-            align-items: center;
-            gap: 1.25rem;
-            font-size: 0.78rem;
-            color: var(--muted);
+            display: flex; align-items: center; gap: 1.25rem;
+            font-size: 0.78rem; color: var(--muted);
         }
-
         .status-dot {
-            display: inline-block;
-            width: 7px;
-            height: 7px;
-            border-radius: 50%;
-            background: var(--green);
-            margin-right: 5px;
-            vertical-align: middle;
-            transition: background 0.3s;
+            display: inline-block; width: 7px; height: 7px;
+            border-radius: 50%; background: var(--green);
+            margin-right: 5px; vertical-align: middle; transition: background 0.3s;
         }
-
-        .status-dot.loading {
-            background: var(--amber);
-            animation: blink 0.9s infinite;
-        }
-
-        .status-dot.error {
-            background: var(--red);
-        }
-
-        @keyframes blink {
-
-            0%,
-            100% {
-                opacity: 1;
-            }
-
-            50% {
-                opacity: 0.25;
-            }
-        }
+        .status-dot.loading { background: var(--amber); animation: blink 0.9s infinite; }
+        .status-dot.error   { background: var(--red); }
+        @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.25} }
 
         /* ── Layout ──────────────────────────────────────── */
-        main {
-            max-width: 1360px;
-            margin: 0 auto;
-            padding: 1.75rem 2rem 3rem;
-        }
+        main { max-width: 1440px; margin: 0 auto; padding: 1.75rem 2rem 3rem; }
 
         /* ── Stat Cards ──────────────────────────────────── */
         .cards {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-            gap: 1rem;
-            margin-bottom: 2rem;
+            gap: 1rem; margin-bottom: 2rem;
         }
-
         .card {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            padding: 1.1rem 1.25rem 1.25rem;
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: 10px; padding: 1.1rem 1.25rem 1.25rem;
         }
-
         .card-label {
-            font-size: 0.7rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.07em;
-            color: var(--muted);
-            margin-bottom: 0.5rem;
+            font-size: 0.7rem; font-weight: 600; text-transform: uppercase;
+            letter-spacing: 0.07em; color: var(--muted); margin-bottom: 0.5rem;
         }
+        .card-value { font-size: 2.1rem; font-weight: 800; letter-spacing: -0.03em; line-height: 1; }
+        .card-value.green  { color: var(--green); }
+        .card-value.red    { color: var(--red); }
+        .card-value.indigo { color: var(--indigo); }
 
-        .card-value {
-            font-size: 2.1rem;
-            font-weight: 800;
-            letter-spacing: -0.03em;
-            line-height: 1;
-        }
-
-        .card-value.green {
-            color: var(--green);
-        }
-
-        .card-value.red {
-            color: var(--red);
-        }
-
-        .card-value.indigo {
-            color: var(--indigo);
-        }
-
-        /* ── Section panels ──────────────────────────────── */
+        /* ── Panels ──────────────────────────────────────── */
         .panel {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            margin-bottom: 1.5rem;
-            overflow: hidden;
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: 10px; margin-bottom: 1.5rem; overflow: hidden;
         }
-
         .panel-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 0.9rem 1.25rem;
-            border-bottom: 1px solid var(--border);
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 0.9rem 1.25rem; border-bottom: 1px solid var(--border);
         }
-
-        .panel-title {
-            font-weight: 600;
-            font-size: 0.88rem;
-        }
-
+        .panel-title { font-weight: 600; font-size: 0.88rem; }
         .pill {
-            background: var(--surface2);
-            border: 1px solid var(--border);
-            border-radius: 20px;
-            padding: 0.15rem 0.65rem;
-            font-size: 0.72rem;
-            color: var(--muted);
+            background: var(--surface2); border: 1px solid var(--border);
+            border-radius: 20px; padding: 0.15rem 0.65rem;
+            font-size: 0.72rem; color: var(--muted);
         }
 
         /* ── Tables ──────────────────────────────────────── */
-        .table-wrap {
-            overflow-x: auto;
-            overflow-y: auto;
-            max-height: 480px;
-        }
-
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-
+        .table-wrap { overflow-x: auto; overflow-y: auto; max-height: 480px; }
+        table { width: 100%; border-collapse: collapse; }
         thead th {
-            position: sticky;
-            top: 0;
-            z-index: 1;
-            background: var(--surface);
-            padding: 0.65rem 1.25rem;
-            text-align: left;
-            font-size: 0.68rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.07em;
-            color: var(--muted);
-            border-bottom: 1px solid var(--border);
-            white-space: nowrap;
+            position: sticky; top: 0; z-index: 1; background: var(--surface);
+            padding: 0.65rem 1.25rem; text-align: left;
+            font-size: 0.68rem; font-weight: 600; text-transform: uppercase;
+            letter-spacing: 0.07em; color: var(--muted);
+            border-bottom: 1px solid var(--border); white-space: nowrap;
         }
-
-        tbody td {
-            padding: 0.75rem 1.25rem;
-            border-bottom: 1px solid var(--border);
-            vertical-align: middle;
-        }
-
-        tbody tr:last-child td {
-            border-bottom: none;
-        }
-
-        tbody tr:hover {
-            background: var(--surface2);
-        }
-
-        .empty-row td {
-            text-align: center;
-            color: var(--muted);
-            padding: 2.5rem;
-            font-size: 0.85rem;
-        }
+        tbody td { padding: 0.75rem 1.25rem; border-bottom: 1px solid var(--border); vertical-align: middle; }
+        tbody tr:last-child td { border-bottom: none; }
+        tbody tr:hover { background: var(--surface2); }
+        .empty-row td { text-align: center; color: var(--muted); padding: 2.5rem; font-size: 0.85rem; }
 
         /* ── Badges ──────────────────────────────────────── */
         .badge {
-            display: inline-block;
-            padding: 0.18rem 0.52rem;
-            border-radius: 5px;
-            font-size: 0.68rem;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-            line-height: 1.4;
+            display: inline-block; padding: 0.18rem 0.52rem; border-radius: 5px;
+            font-size: 0.68rem; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 0.04em; line-height: 1.4;
         }
-
-        .badge-open {
-            background: rgba(129, 140, 248, 0.12);
-            color: var(--indigo);
-        }
-
-        .badge-buy {
-            background: rgba(34, 197, 94, 0.12);
-            color: var(--green);
-        }
-
-        .badge-sell {
-            background: rgba(239, 68, 68, 0.12);
-            color: var(--red);
-        }
-
-        .badge-filled {
-            background: rgba(34, 197, 94, 0.12);
-            color: var(--green);
-        }
-
-        .badge-failed {
-            background: rgba(239, 68, 68, 0.12);
-            color: var(--red);
-        }
-
-        .badge-pending {
-            background: rgba(245, 158, 11, 0.12);
-            color: var(--amber);
-        }
+        .badge-open      { background: rgba(129,140,248,.12); color: var(--indigo); }
+        .badge-active    { background: rgba(245,158,11,.12);  color: var(--amber); }
+        .badge-completed { background: rgba(34,197,94,.12);   color: var(--green); }
+        .badge-buy       { background: rgba(34,197,94,.12);   color: var(--green); }
+        .badge-sell      { background: rgba(239,68,68,.12);   color: var(--red); }
+        .badge-filled    { background: rgba(34,197,94,.12);   color: var(--green); }
+        .badge-failed    { background: rgba(239,68,68,.12);   color: var(--red); }
+        .badge-pending   { background: rgba(245,158,11,.12);  color: var(--amber); }
 
         /* ── Mono / utility ──────────────────────────────── */
-        .mono {
-            font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
-            font-size: 0.8rem;
-        }
-
-        .sym {
-            font-weight: 700;
-            font-size: 0.88rem;
-        }
-
+        .mono { font-family: 'SF Mono','Fira Code','Consolas',monospace; font-size: 0.8rem; }
+        .sym  { font-weight: 700; font-size: 0.88rem; }
         .order-id {
-            display: inline-block;
-            max-width: 130px;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-            vertical-align: bottom;
-            cursor: default;
+            display: inline-block; max-width: 130px; overflow: hidden;
+            text-overflow: ellipsis; white-space: nowrap;
+            vertical-align: bottom; cursor: default;
         }
-
-        .dim {
-            color: var(--muted);
-        }
+        .dim { color: var(--muted); }
 
         /* ── Daily report breakdown ──────────────────────── */
         .breakdown-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-            gap: 1rem;
-            padding: 1.25rem;
+            display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+            gap: 1rem; padding: 1.25rem;
         }
-
         .bk-card {
-            background: var(--surface2);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 1rem 1.1rem;
+            background: var(--surface2); border: 1px solid var(--border);
+            border-radius: 8px; padding: 1rem 1.1rem;
         }
-
-        .bk-symbol {
-            font-weight: 800;
-            font-size: 1rem;
-            letter-spacing: -0.01em;
-            margin-bottom: 0.6rem;
-        }
-
+        .bk-symbol { font-weight: 800; font-size: 1rem; letter-spacing: -0.01em; margin-bottom: 0.6rem; }
         .bk-row {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 0.35rem;
-            font-size: 0.8rem;
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 0.35rem; font-size: 0.8rem;
         }
-
-        .bk-row .dim {
-            font-size: 0.75rem;
-        }
-
+        .bk-row .dim { font-size: 0.75rem; }
         .bk-notional {
-            margin-top: 0.5rem;
-            padding-top: 0.5rem;
-            border-top: 1px solid var(--border);
-            font-size: 0.78rem;
-            color: var(--muted);
-            display: flex;
-            justify-content: space-between;
+            margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid var(--border);
+            font-size: 0.78rem; color: var(--muted);
+            display: flex; justify-content: space-between;
         }
-
-        .bk-notional span:last-child {
-            color: var(--text);
-            font-weight: 600;
-        }
+        .bk-notional span:last-child { color: var(--text); font-weight: 600; }
 
         /* ── Performance panel ───────────────────────────── */
-        .perf-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-            gap: 0;
+        .perf-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0; }
+        .perf-stat { padding: 1.25rem 1.5rem; border-right: 1px solid var(--border); }
+        .perf-stat:last-child { border-right: none; }
+        .perf-label {
+            font-size: 0.7rem; font-weight: 600; text-transform: uppercase;
+            letter-spacing: 0.07em; color: var(--muted); margin-bottom: 0.4rem;
+        }
+        .perf-value { font-size: 1.8rem; font-weight: 800; letter-spacing: -0.03em; line-height: 1; }
+        .perf-value.indigo { color: var(--indigo); }
+        .perf-value.green  { color: var(--green); }
+        .perf-value.red    { color: var(--red); }
+        .perf-sub { font-size: 0.75rem; color: var(--muted); margin-top: 0.3rem; }
+
+        /* ── Section header with controls ────────────────── */
+        .section-label {
+            font-size: 0.75rem; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 0.08em; color: var(--indigo);
+            margin: 2.5rem 0 1rem; padding-left: 0.1rem;
         }
 
-        .perf-stat {
-            padding: 1.25rem 1.5rem;
+        /* ── Date controls ───────────────────────────────── */
+        .date-row {
+            display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-end;
+            padding: 1rem 1.25rem; border-bottom: 1px solid var(--border);
+        }
+        .date-group { display: flex; flex-direction: column; gap: 0.3rem; }
+        .date-group label { font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }
+        .date-input {
+            background: var(--surface2); border: 1px solid var(--border);
+            border-radius: 6px; padding: 0.4rem 0.7rem;
+            color: var(--text); font-size: 0.82rem; font-family: inherit;
+            cursor: pointer;
+        }
+        .date-input:focus { outline: 1px solid var(--indigo); }
+        .btn {
+            background: var(--indigo); color: #fff; border: none;
+            border-radius: 6px; padding: 0.45rem 1rem;
+            font-size: 0.82rem; font-weight: 600; cursor: pointer;
+            transition: opacity 0.15s;
+        }
+        .btn:hover { opacity: 0.85; }
+        .btn-ghost {
+            background: var(--surface2); color: var(--text);
+            border: 1px solid var(--border);
+        }
+
+        /* ── Stats table ─────────────────────────────────── */
+        .stats-table-wrap { overflow-x: auto; }
+        .stats-table { width: 100%; border-collapse: collapse; table-layout: auto; }
+        .stats-table th {
+            position: sticky; top: 0; z-index: 1;
+            background: var(--surface); padding: 0.55rem 0.75rem;
+            text-align: center; font-size: 0.65rem; font-weight: 700;
+            text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted);
+            border-bottom: 1px solid var(--border); white-space: nowrap;
+        }
+        .stats-table th.row-label { text-align: left; }
+        .stats-table td { padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+        .stats-table tbody tr:last-child td { border-bottom: none; font-weight: 700; }
+        .stats-table tbody tr:hover td { background: var(--surface2); }
+        .row-label-cell {
+            white-space: nowrap; font-weight: 600; font-size: 0.78rem;
+            padding: 0.4rem 0.75rem; vertical-align: middle;
             border-right: 1px solid var(--border);
         }
-
-        .perf-stat:last-child {
-            border-right: none;
+        .stat-cell {
+            min-width: 110px;
+            font-size: 0.68rem;
+            background: var(--surface);
         }
-
-        .perf-label {
-            font-size: 0.7rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.07em;
-            color: var(--muted);
-            margin-bottom: 0.4rem;
+        .stat-cell-inner {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 0;
+            border-radius: 6px; overflow: hidden;
         }
-
-        .perf-value {
-            font-size: 1.8rem;
-            font-weight: 800;
-            letter-spacing: -0.03em;
-            line-height: 1;
+        .stat-col { padding: 0.35rem 0.45rem; }
+        .stat-col:first-child { border-right: 1px solid var(--border); }
+        .stat-col-head {
+            font-size: 0.6rem; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 0.05em; color: var(--indigo); margin-bottom: 0.25rem;
         }
-
-        .perf-value.indigo {
-            color: var(--indigo);
+        .stat-line { display: flex; justify-content: space-between; margin-bottom: 0.1rem; color: var(--muted); }
+        .stat-line span:last-child { color: var(--text); font-weight: 600; }
+        .stat-rate {
+            font-size: 0.72rem; font-weight: 800; text-align: center;
+            padding: 0.2rem 0.3rem; border-radius: 4px; margin-top: 0.3rem;
         }
+        .rate-green  { color: var(--green);  background: rgba(34,197,94,.1); }
+        .rate-amber  { color: var(--amber);  background: rgba(245,158,11,.1); }
+        .rate-red    { color: var(--red);    background: rgba(239,68,68,.1); }
+        .rate-none   { color: var(--muted);  background: transparent; }
 
-        .perf-value.green {
-            color: var(--green);
+        /* ── Summary cards ───────────────────────────────── */
+        .summary-cards {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 1rem; padding: 1.25rem;
         }
-
-        .perf-value.red {
-            color: var(--red);
+        .summary-card {
+            background: var(--surface2); border: 1px solid var(--border);
+            border-radius: 8px; padding: 1rem 1.1rem;
         }
-
-        .perf-sub {
-            font-size: 0.75rem;
-            color: var(--muted);
-            margin-top: 0.3rem;
+        .summary-card-label {
+            font-size: 0.68rem; font-weight: 600; text-transform: uppercase;
+            letter-spacing: 0.07em; color: var(--muted); margin-bottom: 0.5rem;
         }
+        .summary-card-value { font-size: 1.15rem; font-weight: 800; color: var(--indigo); }
+        .summary-card-sub   { font-size: 0.72rem; color: var(--muted); margin-top: 0.25rem; }
     </style>
 </head>
 
@@ -416,7 +283,7 @@
     </header>
 
     <main>
-        <!-- Stat Cards -->
+        <!-- ══ Stat Cards ════════════════════════════════════════════════════ -->
         <div class="cards">
             <div class="card">
                 <div class="card-label">Total Signals</div>
@@ -440,11 +307,9 @@
             </div>
         </div>
 
-        <!-- Performance -->
+        <!-- ══ Performance ═══════════════════════════════════════════════════ -->
         <div class="panel" style="margin-bottom:1.5rem">
-            <div class="panel-header">
-                <span class="panel-title">Performance</span>
-            </div>
+            <div class="panel-header"><span class="panel-title">Performance</span></div>
             <div class="perf-grid">
                 <div class="perf-stat">
                     <div class="perf-label">Win Rate</div>
@@ -470,7 +335,7 @@
             </div>
         </div>
 
-        <!-- Today's Signals -->
+        <!-- ══ Today's Signals ════════════════════════════════════════════════ -->
         <div class="panel">
             <div class="panel-header">
                 <span class="panel-title">Today's Signals</span>
@@ -478,26 +343,17 @@
             </div>
             <div class="table-wrap">
                 <table>
-                    <thead>
-                        <tr>
-                            <th>Time</th>
-                            <th>Symbol</th>
-                            <th>Action</th>
-                            <th>Pattern</th>
-                            <th>Entry</th>
-                            <th>Trigger</th>
-                            <th>TP</th>
-                            <th>TP%</th>
-                            <th>Status</th>
-                            <th>Order ID</th>
-                        </tr>
-                    </thead>
+                    <thead><tr>
+                        <th>Time</th><th>Symbol</th><th>Action</th><th>Pattern</th>
+                        <th>Entry</th><th>Trigger</th><th>TP</th><th>TP%</th>
+                        <th>Status</th><th>Order ID</th>
+                    </tr></thead>
                     <tbody id="tbody-today"></tbody>
                 </table>
             </div>
         </div>
 
-        <!-- Signal History -->
+        <!-- ══ Signal History ════════════════════════════════════════════════ -->
         <div class="panel">
             <div class="panel-header">
                 <span class="panel-title">Signal History</span>
@@ -505,26 +361,17 @@
             </div>
             <div class="table-wrap">
                 <table>
-                    <thead>
-                        <tr>
-                            <th>Date &amp; Time</th>
-                            <th>Symbol</th>
-                            <th>Action</th>
-                            <th>Pattern</th>
-                            <th>Entry</th>
-                            <th>Trigger</th>
-                            <th>TP</th>
-                            <th>TP%</th>
-                            <th>Status</th>
-                            <th>Order ID</th>
-                        </tr>
-                    </thead>
+                    <thead><tr>
+                        <th>Date &amp; Time</th><th>Symbol</th><th>Action</th><th>Pattern</th>
+                        <th>Entry</th><th>Trigger</th><th>TP</th><th>TP%</th>
+                        <th>Status</th><th>Order ID</th>
+                    </tr></thead>
                     <tbody id="tbody-history"></tbody>
                 </table>
             </div>
         </div>
 
-        <!-- Daily Report -->
+        <!-- ══ Daily Report ══════════════════════════════════════════════════ -->
         <div class="panel">
             <div class="panel-header">
                 <span class="panel-title">Daily Report — <span id="report-date">today</span></span>
@@ -532,6 +379,95 @@
             </div>
             <div id="breakdown-container"></div>
         </div>
+
+        <!-- ════════════════════════════════════════════════════════════════════
+             STATISTICS SECTION
+        ═══════════════════════════════════════════════════════════════════════ -->
+        <div class="section-label">Statistics</div>
+
+        <!-- Date filter -->
+        <div class="panel">
+            <div class="date-row">
+                <div class="date-group">
+                    <label>Previous Day</label>
+                    <input type="date" id="stats-prev-day" class="date-input" />
+                </div>
+                <div class="date-group">
+                    <label>Day Before Previous</label>
+                    <input type="date" id="stats-day-before" class="date-input" readonly
+                        style="opacity:0.6;cursor:default" title="Auto-calculated: 1 day before previous" />
+                </div>
+                <button class="btn" onclick="loadStats()">Load Statistics</button>
+                <button class="btn btn-ghost" onclick="resetStatsDates()">Reset</button>
+            </div>
+
+            <!-- Stats table -->
+            <div id="stats-loading" style="padding:2rem;text-align:center;color:var(--muted);font-size:.85rem">
+                Select a date and click Load Statistics
+            </div>
+            <div id="stats-table-container" style="display:none">
+                <div class="stats-table-wrap" id="stats-table-wrap"></div>
+            </div>
+        </div>
+
+        <!-- Summary cards -->
+        <div class="panel">
+            <div class="panel-header">
+                <span class="panel-title">Best Performance (last 30 days)</span>
+            </div>
+            <div class="summary-cards" id="summary-cards">
+                <div class="summary-card">
+                    <div class="summary-card-label">Best Direction</div>
+                    <div class="summary-card-value" id="sum-direction">—</div>
+                    <div class="summary-card-sub">most completed trades</div>
+                </div>
+                <div class="summary-card">
+                    <div class="summary-card-label">Best Rule</div>
+                    <div class="summary-card-value" id="sum-rule">—</div>
+                    <div class="summary-card-sub">highest same-day rate</div>
+                </div>
+                <div class="summary-card">
+                    <div class="summary-card-label">Best Session</div>
+                    <div class="summary-card-value" id="sum-session">—</div>
+                    <div class="summary-card-sub">highest same-day rate</div>
+                </div>
+                <div class="summary-card">
+                    <div class="summary-card-label">Best Combination</div>
+                    <div class="summary-card-value" id="sum-combo" style="font-size:0.9rem">—</div>
+                    <div class="summary-card-sub">direction · rule · session</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Day-by-day filter -->
+        <div class="section-label">Day Filter</div>
+        <div class="panel">
+            <div class="date-row">
+                <div class="date-group">
+                    <label>Show signals for date</label>
+                    <input type="date" id="day-filter-date" class="date-input" />
+                </div>
+                <button class="btn" onclick="loadDaySignals()">Load</button>
+                <button class="btn btn-ghost" onclick="clearDayFilter()">Clear</button>
+            </div>
+            <div class="panel-header" style="border-top:1px solid var(--border)">
+                <span class="panel-title">Filtered Signals — <span id="day-filter-label">—</span></span>
+                <span class="pill" id="pill-day-filter">0</span>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead><tr>
+                        <th>Time</th><th>Symbol</th><th>Action</th><th>Pattern</th>
+                        <th>Entry</th><th>Trigger</th><th>TP</th><th>TP%</th>
+                        <th>Status</th><th>Fill Time</th><th>Completed</th><th>Order ID</th>
+                    </tr></thead>
+                    <tbody id="tbody-day-filter">
+                        <tr class="empty-row"><td colspan="12">Select a date above</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
     </main>
 
     <script>
@@ -539,11 +475,10 @@
         let countdown = INTERVAL;
         let tickTimer = null;
 
-        // ── Formatters ────────────────────────────────────────────────────────────
+        // ── Formatters ────────────────────────────────────────────────────────
 
         function fmtTime(ts) {
             if (!ts) return '—';
-            // Stored as naive local Beirut time "YYYY-MM-DDTHH:MM:SS" — display as-is
             const p = ts.replace('T', ' ').split(/[- :]/);
             return `${p[3]}:${p[4]}:${p[5] || '00'}`;
         }
@@ -551,7 +486,7 @@
         function fmtDateTime(ts) {
             if (!ts) return '—';
             const p = ts.replace('T', ' ').split(/[- :]/);
-            const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][parseInt(p[1]) - 1] || '';
+            const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][parseInt(p[1])-1]||'';
             return `${mon} ${parseInt(p[2])} ${p[3]}:${p[4]}`;
         }
 
@@ -563,8 +498,6 @@
             if (!id) return '<span class="dim">—</span>';
             return `<span class="mono order-id" title="${id}">${id}</span>`;
         }
-
-        // ── Renderers ─────────────────────────────────────────────────────────────
 
         function fmtPrice(val) {
             if (val === null || val === undefined) return '<span class="dim">—</span>';
@@ -584,63 +517,253 @@
             return `<span class="mono" style="color:${col}">${sign}${pct.toFixed(2)}%</span>`;
         }
 
+        // ── Table renderers ───────────────────────────────────────────────────
+
         function renderRows(signals, useDateTime = false) {
             if (!signals.length) {
                 return '<tr class="empty-row"><td colspan="10">No signals yet</td></tr>';
             }
             return signals.map(s => `
-      <tr>
-        <td class="mono dim">${useDateTime ? fmtDateTime(s.timestamp) : fmtTime(s.timestamp)}</td>
-        <td class="sym">${s.symbol}</td>
-        <td>${badge(s.action, s.action)}</td>
-        <td>${fmtPattern(s.pattern_type)}</td>
-        <td>${fmtPrice(s.price)}</td>
-        <td>${fmtPrice(s.trigger_price)}</td>
-        <td>${fmtPrice(s.take_profit)}</td>
-        <td>${fmtTpPercent(s.price, s.take_profit)}</td>
-        <td>${badge(s.status, s.status)}</td>
-        <td>${orderId(s.order_id)}</td>
-      </tr>
-    `).join('');
+              <tr>
+                <td class="mono dim">${useDateTime ? fmtDateTime(s.timestamp) : fmtTime(s.timestamp)}</td>
+                <td class="sym">${s.symbol}</td>
+                <td>${badge(s.action, s.action)}</td>
+                <td>${fmtPattern(s.pattern_type)}</td>
+                <td>${fmtPrice(s.price)}</td>
+                <td>${fmtPrice(s.trigger_price)}</td>
+                <td>${fmtPrice(s.take_profit)}</td>
+                <td>${fmtTpPercent(s.price, s.take_profit)}</td>
+                <td>${badge(s.status, s.status)}</td>
+                <td>${orderId(s.order_id)}</td>
+              </tr>
+            `).join('');
+        }
+
+        function renderDayRows(signals) {
+            if (!signals.length) {
+                return '<tr class="empty-row"><td colspan="12">No signals for this date</td></tr>';
+            }
+            return signals.map(s => `
+              <tr>
+                <td class="mono dim">${fmtTime(s.timestamp)}</td>
+                <td class="sym">${s.symbol}</td>
+                <td>${badge(s.action, s.action)}</td>
+                <td>${fmtPattern(s.pattern_type)}</td>
+                <td>${fmtPrice(s.price)}</td>
+                <td>${fmtPrice(s.trigger_price)}</td>
+                <td>${fmtPrice(s.take_profit)}</td>
+                <td>${fmtTpPercent(s.price, s.take_profit)}</td>
+                <td>${badge(s.status, s.status)}</td>
+                <td class="mono dim">${fmtTime(s.entry_fill_time)}</td>
+                <td class="mono dim">${fmtTime(s.completion_time)}</td>
+                <td>${orderId(s.order_id)}</td>
+              </tr>
+            `).join('');
         }
 
         function renderBreakdown(rows) {
             if (!rows.length) {
                 return '<div style="padding:2rem;text-align:center;color:var(--muted);font-size:.85rem">No data for today</div>';
             }
-
-            // Group rows by symbol
             const bySymbol = {};
             for (const r of rows) {
                 (bySymbol[r.symbol] = bySymbol[r.symbol] || []).push(r);
             }
-
             return `<div class="breakdown-grid">${Object.entries(bySymbol).map(([symbol, entries]) => {
                 const totalNotional = entries.reduce((s, r) => s + (r.notional || 0), 0);
                 return `
-          <div class="bk-card">
-            <div class="bk-symbol">${symbol}</div>
-            ${entries.map(r => `
-              <div class="bk-row">
-                <span>${badge(r.action, r.action)} ${badge(r.status, r.status)}</span>
-                <span>${r.count} signal${r.count !== 1 ? 's' : ''}</span>
-              </div>
-            `).join('')}
-            ${totalNotional > 0 ? `
-              <div class="bk-notional">
-                <span>Notional</span>
-                <span>$${totalNotional.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-              </div>` : ''}
-          </div>
-        `;
-            }).join('')
-                }</div>`;
+                  <div class="bk-card">
+                    <div class="bk-symbol">${symbol}</div>
+                    ${entries.map(r => `
+                      <div class="bk-row">
+                        <span>${badge(r.action, r.action)} ${badge(r.status, r.status)}</span>
+                        <span>${r.count} signal${r.count !== 1 ? 's' : ''}</span>
+                      </div>
+                    `).join('')}
+                    ${totalNotional > 0 ? `
+                      <div class="bk-notional">
+                        <span>Notional</span>
+                        <span>$${totalNotional.toLocaleString(undefined, {minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+                      </div>` : ''}
+                  </div>
+                `;
+            }).join('')}</div>`;
         }
 
-        // ── Fetch + Render ────────────────────────────────────────────────────────
+        // ── Stats helpers ─────────────────────────────────────────────────────
+
+        function rateClass(rate) {
+            if (rate === 0) return 'rate-none';
+            if (rate >= 70)  return 'rate-green';
+            if (rate >= 40)  return 'rate-amber';
+            return 'rate-red';
+        }
+
+        function renderStatCell(cell, prevLabel, beforeLabel) {
+            if (!cell) cell = {};
+            const prev = cell;
+            function col(label, prevVal, beforeVal) {
+                return `<div class="stat-line"><span>${label}</span><span>${prevVal ?? 0}</span></div>`;
+            }
+            function colB(label, prevVal, beforeVal) {
+                return `<div class="stat-line"><span>${label}</span><span>${beforeVal ?? 0}</span></div>`;
+            }
+            const rp = cell.rate_prev   ?? 0;
+            const rb = cell.rate_before ?? 0;
+            return `
+              <div class="stat-cell-inner">
+                <div class="stat-col">
+                  <div class="stat-col-head">${prevLabel}</div>
+                  <div class="stat-line"><span class="dim">Open</span><span>${cell.unactive_prev ?? 0}</span></div>
+                  <div class="stat-line"><span class="dim">Active</span><span>${cell.active_prev ?? 0}</span></div>
+                  <div class="stat-line"><span class="dim">Same✓</span><span>${cell.completed_same_prev ?? 0}</span></div>
+                  <div class="stat-line"><span class="dim">Carry</span><span>${cell.completed_carried_prev ?? 0}</span></div>
+                  <div class="stat-rate ${rateClass(rp)}">${rp}%</div>
+                </div>
+                <div class="stat-col">
+                  <div class="stat-col-head">${beforeLabel}</div>
+                  <div class="stat-line"><span class="dim">Open</span><span>${cell.unactive_before ?? 0}</span></div>
+                  <div class="stat-line"><span class="dim">Active</span><span>${cell.active_before ?? 0}</span></div>
+                  <div class="stat-line"><span class="dim">Same✓</span><span>${cell.completed_same_before ?? 0}</span></div>
+                  <div class="stat-line"><span class="dim">Carry</span><span>${cell.completed_carried_before ?? 0}</span></div>
+                  <div class="stat-rate ${rateClass(rb)}">${rb}%</div>
+                </div>
+              </div>`;
+        }
+
+        function renderStatsTable(data) {
+            const sessions  = [...(data.sessions || []), 'Overall'];
+            const prevShort = data.prev_day?.slice(5)   || '—';
+            const bfShort   = data.day_before?.slice(5) || '—';
+
+            let html = `<table class="stats-table">
+              <thead><tr>
+                <th class="row-label">Direction / Rule</th>
+                ${sessions.map(s => `<th>${s}</th>`).join('')}
+              </tr></thead>
+              <tbody>`;
+
+            for (const row of (data.rows || [])) {
+                const dirLabel = row.direction === 'long'
+                    ? '<span style="color:var(--green)">▲ Long</span>'
+                    : '<span style="color:var(--red)">▼ Short</span>';
+                html += `<tr>
+                  <td class="row-label-cell">${dirLabel} <span class="dim">${row.rule}</span></td>
+                  ${sessions.map(s => `
+                    <td class="stat-cell">
+                      ${renderStatCell(row.cells?.[s], prevShort, bfShort)}
+                    </td>`).join('')}
+                </tr>`;
+            }
+
+            // Totals row
+            html += `<tr>
+              <td class="row-label-cell" style="color:var(--indigo)">TOTAL</td>
+              ${sessions.map(s => `
+                <td class="stat-cell">
+                  ${renderStatCell(data.totals?.[s], prevShort, bfShort)}
+                </td>`).join('')}
+            </tr>`;
+
+            html += '</tbody></table>';
+            return html;
+        }
+
+        // ── Stats date controls ───────────────────────────────────────────────
+
+        function isoToday() {
+            return new Date().toISOString().slice(0, 10);
+        }
+
+        function isoYesterday() {
+            const d = new Date(); d.setDate(d.getDate() - 1);
+            return d.toISOString().slice(0, 10);
+        }
+
+        function isoDayBefore(prevDay) {
+            const d = new Date(prevDay + 'T00:00:00');
+            d.setDate(d.getDate() - 1);
+            return d.toISOString().slice(0, 10);
+        }
+
+        function resetStatsDates() {
+            const prev = isoYesterday();
+            document.getElementById('stats-prev-day').value   = prev;
+            document.getElementById('stats-day-before').value = isoDayBefore(prev);
+        }
+
+        document.getElementById('stats-prev-day').addEventListener('change', function() {
+            if (this.value) {
+                document.getElementById('stats-day-before').value = isoDayBefore(this.value);
+            }
+        });
+
+        async function loadStats() {
+            const prevDay = document.getElementById('stats-prev-day').value;
+            if (!prevDay) { alert('Please select a date.'); return; }
+
+            const loading = document.getElementById('stats-loading');
+            const container = document.getElementById('stats-table-container');
+            loading.textContent = 'Loading…';
+            loading.style.display = 'block';
+            container.style.display = 'none';
+
+            try {
+                const res  = await fetch(`/dashboard/stats/table?date=${prevDay}`);
+                const data = await res.json();
+                document.getElementById('stats-table-wrap').innerHTML = renderStatsTable(data);
+                loading.style.display  = 'none';
+                container.style.display = 'block';
+            } catch (e) {
+                loading.textContent = 'Failed to load stats: ' + e.message;
+            }
+        }
+
+        async function loadSummary() {
+            try {
+                const res  = await fetch('/dashboard/stats/summary');
+                const data = await res.json();
+                document.getElementById('sum-direction').textContent = data.best_direction || '—';
+                document.getElementById('sum-rule').textContent      = data.best_rule      || '—';
+                document.getElementById('sum-session').textContent   = data.best_session   || '—';
+                if (data.best_combination) {
+                    const bc = data.best_combination;
+                    document.getElementById('sum-combo').textContent =
+                        `${bc.direction} · ${bc.rule} · ${bc.session}`;
+                }
+            } catch (e) {
+                console.warn('Summary load failed:', e);
+            }
+        }
+
+        // ── Day filter ────────────────────────────────────────────────────────
+
+        async function loadDaySignals() {
+            const d = document.getElementById('day-filter-date').value;
+            if (!d) { alert('Please select a date.'); return; }
+            try {
+                const res  = await fetch(`/dashboard/daily?date=${d}`);
+                const data = await res.json();
+                document.getElementById('day-filter-label').textContent = d;
+                document.getElementById('pill-day-filter').textContent  = data.total;
+                document.getElementById('tbody-day-filter').innerHTML   = renderDayRows(data.signals);
+            } catch (e) {
+                console.warn('Day filter load failed:', e);
+            }
+        }
+
+        function clearDayFilter() {
+            document.getElementById('day-filter-date').value = '';
+            document.getElementById('day-filter-label').textContent = '—';
+            document.getElementById('pill-day-filter').textContent  = '0';
+            document.getElementById('tbody-day-filter').innerHTML =
+                '<tr class="empty-row"><td colspan="12">Select a date above</td></tr>';
+        }
+
+        // ── Main refresh ──────────────────────────────────────────────────────
 
         async function refresh() {
-            const dot = document.getElementById('dot');
+            const dot  = document.getElementById('dot');
             const info = document.getElementById('updated-at');
             dot.className = 'status-dot loading';
             info.innerHTML = '<span class="status-dot loading" id="dot"></span>Updating…';
@@ -663,36 +786,37 @@
                 ]);
 
                 // Performance panel
-                document.getElementById('perf-winrate').textContent = stats.win_rate + '%';
-                document.getElementById('perf-ratio').textContent = `${stats.filled} filled / ${stats.total_signals} total`;
-                document.getElementById('perf-filled').textContent = stats.filled;
-                document.getElementById('perf-failed').textContent = stats.failed;
+                document.getElementById('perf-winrate').textContent      = stats.win_rate + '%';
+                document.getElementById('perf-ratio').textContent        = `${stats.filled} filled / ${stats.total_signals} total`;
+                document.getElementById('perf-filled').textContent       = stats.filled;
+                document.getElementById('perf-failed').textContent       = stats.failed;
                 document.getElementById('perf-filled-today').textContent = stats.total_filled_today;
                 document.getElementById('perf-failed-today').textContent = stats.total_failed_today;
 
                 // Cards
-                document.getElementById('card-total').textContent = all.total;
-                document.getElementById('card-today').textContent = today.total;
+                document.getElementById('card-total').textContent   = all.total;
+                document.getElementById('card-today').textContent   = today.total;
                 document.getElementById('card-history').textContent = history.total;
-                document.getElementById('card-open').textContent = all.signals.filter(s => s.status === 'open').length;
+                document.getElementById('card-open').textContent    =
+                    all.signals.filter(s => s.status === 'open').length;
                 const lastSig = all.signals[0];
                 document.getElementById('card-last').textContent = lastSig ? fmtTime(lastSig.timestamp) : '—';
 
                 // Today table
-                document.getElementById('pill-today').textContent = today.total;
-                document.getElementById('tbody-today').innerHTML = renderRows(today.signals, false);
+                document.getElementById('pill-today').textContent    = today.total;
+                document.getElementById('tbody-today').innerHTML      = renderRows(today.signals, false);
 
                 // History table
-                document.getElementById('pill-history').textContent = history.total;
-                document.getElementById('tbody-history').innerHTML = renderRows(history.signals, true);
+                document.getElementById('pill-history').textContent  = history.total;
+                document.getElementById('tbody-history').innerHTML    = renderRows(history.signals, true);
 
                 // Daily report
-                document.getElementById('report-date').textContent = report.date;
-                document.getElementById('pill-report').textContent = `${report.total_signals} signal${report.total_signals !== 1 ? 's' : ''}`;
+                document.getElementById('report-date').textContent   = report.date;
+                document.getElementById('pill-report').textContent   = `${report.total_signals} signal${report.total_signals !== 1 ? 's' : ''}`;
                 document.getElementById('breakdown-container').innerHTML = renderBreakdown(report.breakdown);
 
                 // Status indicator
-                const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                const now = new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
                 info.innerHTML = `<span class="status-dot" id="dot"></span>Updated ${now}`;
 
             } catch (err) {
@@ -700,7 +824,7 @@
             }
         }
 
-        // ── Auto-refresh countdown ────────────────────────────────────────────────
+        // ── Auto-refresh countdown ────────────────────────────────────────────
 
         function startCountdown() {
             clearInterval(tickTimer);
@@ -717,12 +841,14 @@
             }, 1000);
         }
 
-        // Initial load
-        refresh().then(startCountdown);
+        // ── Init ──────────────────────────────────────────────────────────────
 
-        // PWA service worker
+        resetStatsDates();
+        refresh().then(startCountdown);
+        loadSummary();
+
         if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('/dashboard/sw.js', { scope: '/dashboard/' });
+            navigator.serviceWorker.register('/dashboard/sw.js', {scope: '/dashboard/'});
         }
     </script>
 </body>

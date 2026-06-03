@@ -27,12 +27,22 @@ CREATE TABLE IF NOT EXISTS signals (
 );
 """
 
+# Columns added after initial schema — safe to run on existing DBs.
+_MIGRATIONS = [
+    ("stop_loss",       "REAL"),
+    ("take_profit",     "REAL"),
+    ("trigger_price",   "REAL"),
+    ("pattern_type",    "TEXT"),
+    ("tp_order_id",     "TEXT"),
+    ("entry_fill_time", "DATETIME"),
+    ("completion_time", "DATETIME"),
+]
+
 
 def init_db_sync() -> None:
     with sqlite3.connect(settings.DB_PATH) as conn:
         conn.execute(_CREATE_TABLE)
-        for col, typedef in [("stop_loss", "REAL"), ("take_profit", "REAL"),
-                             ("trigger_price", "REAL"), ("pattern_type", "TEXT")]:
+        for col, typedef in _MIGRATIONS:
             try:
                 conn.execute(f"ALTER TABLE signals ADD COLUMN {col} {typedef}")
             except sqlite3.OperationalError:
@@ -80,8 +90,53 @@ async def insert_signal(signal: Signal) -> int:
         return cursor.lastrowid or 0
 
 
+# ── Sync helpers (called from WebSocket thread) ───────────────────────────────
+
+def mark_entry_filled_sync(order_id: str, fill_time: str) -> bool:
+    """Transition OPEN → ACTIVE and record fill timestamp. Returns True if updated."""
+    with sqlite3.connect(settings.DB_PATH) as conn:
+        cur = conn.execute(
+            "UPDATE signals SET status='active', entry_fill_time=? WHERE order_id=? AND status='open'",
+            (fill_time, order_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def set_tp_order_id_sync(order_id: str, tp_order_id: str) -> None:
+    """Store the TP order ID so we can match its fill event later."""
+    with sqlite3.connect(settings.DB_PATH) as conn:
+        conn.execute(
+            "UPDATE signals SET tp_order_id=? WHERE order_id=?",
+            (tp_order_id, order_id),
+        )
+        conn.commit()
+
+
+def mark_tp_completed_sync(tp_order_id: str, completion_time: str) -> bool:
+    """Transition ACTIVE → COMPLETED and record completion timestamp. Returns True if updated."""
+    with sqlite3.connect(settings.DB_PATH) as conn:
+        cur = conn.execute(
+            "UPDATE signals SET status='completed', completion_time=? WHERE tp_order_id=? AND status='active'",
+            (completion_time, tp_order_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def update_order_status_sync(order_id: str, new_status: SignalStatus) -> bool:
+    """Generic sync update — used for FAILED transitions (cancelled/rejected/expired)."""
+    with sqlite3.connect(settings.DB_PATH) as conn:
+        cur = conn.execute(
+            "UPDATE signals SET status = ? WHERE order_id = ? AND status IN ('open', 'active')",
+            (new_status.value, order_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
 def get_tp_info_sync(order_id: str) -> Optional[dict]:
-    """Return TP placement data for a filled order. Called from the WebSocket thread."""
+    """Return TP placement data for a filled entry order. Called from WebSocket thread."""
     with sqlite3.connect(settings.DB_PATH) as conn:
         cur = conn.execute(
             "SELECT take_profit, symbol, action, category FROM signals WHERE order_id = ?",
@@ -93,17 +148,7 @@ def get_tp_info_sync(order_id: str) -> Optional[dict]:
     return {"take_profit": row[0], "symbol": row[1], "action": row[2], "category": row[3]}
 
 
-def update_order_status_sync(order_id: str, new_status: SignalStatus) -> bool:
-    """Sync update called from the WebSocket callback thread.
-    Only transitions OPEN orders — ignores anything already FILLED or FAILED."""
-    with sqlite3.connect(settings.DB_PATH) as conn:
-        cur = conn.execute(
-            "UPDATE signals SET status = ? WHERE order_id = ? AND status = 'open'",
-            (new_status.value, order_id),
-        )
-        conn.commit()
-        return cur.rowcount > 0
-
+# ── Async helpers (called from FastAPI routes) ────────────────────────────────
 
 async def update_signal_status(
     signal_id: int,
@@ -158,17 +203,48 @@ async def get_signals_before_today() -> List[dict]:
         return [_row_to_dict(r) for r in rows]
 
 
+async def get_signals_by_date(target_date: str) -> List[dict]:
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT * FROM signals WHERE date(timestamp) = ? ORDER BY timestamp DESC",
+            (target_date,),
+        )
+        rows = await cursor.fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+
+async def get_signals_for_stats(prev_day: str, day_before: str) -> List[dict]:
+    """Fetch all signals relevant to a two-day stats window.
+
+    Includes signals confirmed on either day AND signals completed on either day
+    (even if confirmed earlier — for 'carried' completion counting).
+    """
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT * FROM signals
+            WHERE date(timestamp) IN (?, ?)
+               OR (completion_time IS NOT NULL AND date(completion_time) IN (?, ?))
+            """,
+            (prev_day, day_before, prev_day, day_before),
+        )
+        rows = await cursor.fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+
 async def get_performance_stats() -> dict:
     today = today_local()
+    # 'active', 'completed', and legacy 'filled' all count as successful entries
+    _success = "status IN ('filled', 'active', 'completed')"
     async with get_db() as db:
-        total_row   = await (await db.execute("SELECT COUNT(*) FROM signals")).fetchone()
-        filled_row  = await (await db.execute("SELECT COUNT(*) FROM signals WHERE status = 'filled'")).fetchone()
-        failed_row  = await (await db.execute("SELECT COUNT(*) FROM signals WHERE status = 'failed'")).fetchone()
+        total_row        = await (await db.execute("SELECT COUNT(*) FROM signals")).fetchone()
+        filled_row       = await (await db.execute(f"SELECT COUNT(*) FROM signals WHERE {_success}")).fetchone()
+        failed_row       = await (await db.execute("SELECT COUNT(*) FROM signals WHERE status='failed'")).fetchone()
         filled_today_row = await (await db.execute(
-            "SELECT COUNT(*) FROM signals WHERE status = 'filled' AND date(timestamp) = ?", (today,)
+            f"SELECT COUNT(*) FROM signals WHERE {_success} AND date(timestamp) = ?", (today,)
         )).fetchone()
         failed_today_row = await (await db.execute(
-            "SELECT COUNT(*) FROM signals WHERE status = 'failed' AND date(timestamp) = ?", (today,)
+            "SELECT COUNT(*) FROM signals WHERE status='failed' AND date(timestamp) = ?", (today,)
         )).fetchone()
 
     total  = total_row[0]  if total_row  else 0
@@ -197,8 +273,6 @@ async def get_daily_report(report_date: Optional[str] = None) -> dict:
                    action,
                    status,
                    COUNT(*)   AS count,
-                   -- NOTE: notional is 0 for market orders (no price at signal time).
-                   -- To fix later: store actual fill price returned by Bybit after order placement.
                    SUM(quantity * COALESCE(price, 0)) AS notional
               FROM signals
              WHERE date(timestamp) = ?
@@ -219,3 +293,17 @@ async def get_daily_report(report_date: Optional[str] = None) -> dict:
         "total_signals": total,
         "breakdown": [_row_to_dict(r) for r in rows],
     }
+
+
+async def get_all_signals_for_summary(days: int = 30) -> List[dict]:
+    """Fetch the last N days of signals for summary/best-combo computation."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            f"""
+            SELECT * FROM signals
+            WHERE date(timestamp) >= date('now', '-{days} days')
+            ORDER BY timestamp DESC
+            """
+        )
+        rows = await cursor.fetchall()
+        return [_row_to_dict(r) for r in rows]

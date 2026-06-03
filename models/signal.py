@@ -20,10 +20,12 @@ class OrderType(str, Enum):
 
 
 class SignalStatus(str, Enum):
-    PENDING = "pending"
-    OPEN = "open"      # order placed on exchange, waiting for price to hit
-    FILLED = "filled"  # order actually executed
-    FAILED = "failed"
+    PENDING   = "pending"
+    OPEN      = "open"       # entry placed, waiting for price to fill
+    ACTIVE    = "active"     # entry filled, TP order pending
+    COMPLETED = "completed"  # TP order filled — position closed
+    FILLED    = "filled"     # legacy: market-order immediate fill (kept for compat)
+    FAILED    = "failed"
 
 
 class SignalCreate(BaseModel):
@@ -59,6 +61,9 @@ class Signal(SignalCreate):
     exchange: str = ""
     order_id: Optional[str] = None
     error_message: Optional[str] = None
+    tp_order_id: Optional[str] = None
+    entry_fill_time: Optional[datetime] = None
+    completion_time: Optional[datetime] = None
 
     class Config:
         from_attributes = True
