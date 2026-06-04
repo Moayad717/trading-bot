@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from pybit.unified_trading import WebSocket
 
-from config import settings
+from config import now_local, settings
 from db import (
     get_tp_info_sync,
     mark_entry_filled_sync,
@@ -22,8 +21,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _now_utc_iso() -> str:
-    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+def _now_local_iso() -> str:
+    return now_local().isoformat()
 
 
 class OrderTracker:
@@ -82,7 +81,7 @@ class OrderTracker:
 
     def _handle_fill(self, order: Dict[str, Any]) -> None:
         order_id  = order.get("orderId", "")
-        fill_time = _now_utc_iso()
+        fill_time = _now_local_iso()
 
         # Try entry fill first (matches rows with status='open')
         was_entry = mark_entry_filled_sync(order_id, fill_time)
