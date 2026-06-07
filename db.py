@@ -92,6 +92,16 @@ async def insert_signal(signal: Signal) -> int:
 
 # ── Sync helpers (called from WebSocket thread) ───────────────────────────────
 
+async def mark_market_order_filled(signal_id: int, order_id: str, fill_time: str) -> None:
+    """Set status=active + order_id + entry_fill_time for a market order that filled instantly."""
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE signals SET status='active', order_id=?, entry_fill_time=? WHERE id=?",
+            (order_id, fill_time, signal_id),
+        )
+        await db.commit()
+
+
 def mark_entry_filled_sync(order_id: str, fill_time: str) -> bool:
     """Transition OPEN → ACTIVE and record fill timestamp. Returns True if updated."""
     with sqlite3.connect(settings.DB_PATH) as conn:

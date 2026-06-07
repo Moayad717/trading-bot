@@ -6,9 +6,9 @@ from typing import Any, Dict
 from fastapi import APIRouter, HTTPException, Request, status
 
 from config import now_local, settings
-from db import insert_signal, update_signal_status
+from db import insert_signal, mark_market_order_filled, set_tp_order_id_sync, update_signal_status
 from exchanges.bybit import BybitExchange
-from models.signal import OrderType, Signal, SignalStatus
+from models.signal import Action, OrderType, Signal, SignalStatus
 from sources import tradingview as tv_parser
 
 logger = logging.getLogger(__name__)
@@ -77,22 +77,45 @@ async def tradingview_webhook(request: Request) -> Dict[str, Any]:
             detail={"signal_id": signal_id, "error": error_msg},
         )
 
-    # Order accepted by exchange — update status outside the error-catching block
-    # Market orders execute immediately; limit orders sit on the book until price hits
-    placed_status = (
-        SignalStatus.FILLED if signal_create.order_type == OrderType.MARKET
-        else SignalStatus.OPEN
-    )
-    await update_signal_status(
-        signal_id,
-        status=placed_status,
-        order_id=result.get("order_id"),
-    )
+    order_id = result.get("order_id", "")
+
+    if signal_create.order_type == OrderType.MARKET:
+        # Market orders fill instantly — mark active and place TP immediately.
+        # The WebSocket never fires for these, so we handle the full lifecycle here.
+        fill_time = now_local().isoformat()
+        await mark_market_order_filled(signal_id, order_id, fill_time)
+        placed_status = SignalStatus.ACTIVE
+
+        if signal_create.take_profit and order_id:
+            tp_side      = "Sell" if signal_create.action == Action.BUY else "Buy"
+            position_idx = 1 if signal_create.action == Action.BUY else 2
+            try:
+                tp_result = exchange.place_tp_order(
+                    symbol=signal_create.symbol,
+                    side=tp_side,
+                    qty=signal_create.quantity,
+                    price=signal_create.take_profit,
+                    position_idx=position_idx,
+                    category=signal_create.category,
+                )
+                tp_oid = tp_result.get("order_id", "")
+                if tp_oid:
+                    set_tp_order_id_sync(order_id, tp_oid)
+                    logger.info("Market TP placed: entry_id=%s tp_id=%s symbol=%s",
+                                order_id, tp_oid, signal_create.symbol)
+            except Exception as exc:
+                logger.error("Market TP failed: entry_id=%s symbol=%s error=%s",
+                             order_id, signal_create.symbol, exc)
+    else:
+        # Limit order: sits on the book; WebSocket handles fill → ACTIVE → TP → COMPLETED.
+        await update_signal_status(signal_id, status=SignalStatus.OPEN, order_id=order_id)
+        placed_status = SignalStatus.OPEN
+
     logger.info("Order placed: id=%s symbol=%s action=%s status=%s order_id=%s",
-                signal_id, signal.symbol, signal.action, placed_status.value, result.get("order_id"))
+                signal_id, signal.symbol, signal.action, placed_status.value, order_id)
     return {
         "signal_id": signal_id,
         "status": placed_status.value,
-        "order_id": result.get("order_id"),
+        "order_id": order_id,
         "exchange": exchange.name,
     }
