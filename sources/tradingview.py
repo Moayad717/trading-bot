@@ -94,13 +94,10 @@ def parse(payload: Dict[str, Any]) -> SignalCreate:
         raw_order_type = order_obj.get("order_type")
     order_type = _parse_order_type(raw_order_type)
 
-    # Convert USDT notional → contracts: qty = amount / price (limit orders only)
     try:
         quantity = float(raw_qty)
     except (TypeError, ValueError):
         raise ValueError(f"Invalid quantity value: '{raw_qty}'")
-    if is_notional and order_type == OrderType.LIMIT and price:
-        quantity = round(quantity / price, 1)
 
     # Category
     raw_category = _find(payload, _CATEGORY_KEYS)
@@ -108,6 +105,14 @@ def parse(payload: Dict[str, Any]) -> SignalCreate:
 
     # Trigger price and pattern type — flat fields only
     trigger_price = _to_float(_find(payload, _TRIGGER_PRICE_KEYS), "trigger_price")
+
+    # Convert USDT notional → contracts: use limit price, fall back to trigger_price for market orders
+    if is_notional:
+        base_price = price if price is not None else trigger_price
+        if base_price:
+            quantity = round(quantity / base_price, 1)
+        else:
+            raise ValueError("Cannot convert notional amount: no price or trigger_price available")
     raw_pattern = _find(payload, _PATTERN_TYPE_KEYS)
     pattern_type: Optional[str] = str(raw_pattern).strip() if raw_pattern and not isinstance(raw_pattern, dict) else None
 
