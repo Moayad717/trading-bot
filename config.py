@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     # testnet = true, mainnet = false
     TESTNET: bool = True
 
+    # paper trading — parse and record signals but skip all exchange calls
+    PAPER_TRADING: bool = False
+
     BYBIT_API_KEY: str = ""
     BYBIT_API_SECRET: str = ""
 

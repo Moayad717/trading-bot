@@ -66,6 +66,17 @@ async def tradingview_webhook(request: Request) -> Dict[str, Any]:
     )
     signal_id = await insert_signal(signal)
 
+    if settings.PAPER_TRADING:
+        await update_signal_status(signal_id, status=SignalStatus.OPEN)
+        logger.info("Paper trade recorded: id=%s symbol=%s action=%s",
+                    signal_id, signal.symbol, signal.action)
+        return {
+            "signal_id": signal_id,
+            "status": SignalStatus.OPEN.value,
+            "order_id": None,
+            "exchange": "paper",
+        }
+
     try:
         result = exchange.place_order(signal_create)
     except Exception as exc:
