@@ -643,8 +643,9 @@ function renderTable() {
         tbody.innerHTML = '<tr class="empty-row"><td colspan="12">No signals match the current filters</td></tr>';
     } else {
         tbody.innerHTML = slice.map(s => {
+            const entryPrice = s.price ?? s.trigger_price;
             const tpCell = s.take_profit != null
-                ? `<div class="tp-cell">${fmtPrice(s.take_profit)}${fmtTpPct(s.price, s.take_profit)}</div>`
+                ? `<div class="tp-cell">${fmtPrice(s.take_profit)}${fmtTpPct(entryPrice, s.take_profit)}</div>`
                 : '<span class="dim">—</span>';
             return `<tr>
               <td>${fmtDateTime(s.timestamp)}</td>
@@ -652,9 +653,9 @@ function renderTable() {
               <td>${badge(s.action, s.action)}</td>
               <td class="mono dim" style="font-size:.75rem">${s.pattern_type || '<span class="dim">—</span>'}</td>
               <td style="white-space:nowrap">${sessionTags(s.timestamp)}</td>
-              <td>${fmtPrice(s.price ?? s.trigger_price)}</td>
+              <td>${fmtPrice(entryPrice)}</td>
               <td>${tpCell}</td>
-              <td>${fmtTpPct(s.price, s.take_profit)}</td>
+              <td>${fmtTpPct(entryPrice, s.take_profit)}</td>
               <td>${badge(s.status, s.status)}</td>
               <td>${fmtTime(s.entry_fill_time)}</td>
               <td>${fmtTime(s.completion_time)}</td>
