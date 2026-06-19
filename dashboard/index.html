@@ -378,6 +378,7 @@
                         <th class="sortable" data-col="symbol">Symbol</th>
                         <th class="sortable" data-col="action">Direction</th>
                         <th>Pattern</th>
+                        <th>Interval</th>
                         <th>Session</th>
                         <th class="sortable" data-col="price">Entry</th>
                         <th class="sortable" data-col="take_profit">TP</th>
@@ -640,7 +641,7 @@ function renderTable() {
 
     const tbody = document.getElementById('tbody-signals');
     if (!slice.length) {
-        tbody.innerHTML = '<tr class="empty-row"><td colspan="12">No signals match the current filters</td></tr>';
+        tbody.innerHTML = '<tr class="empty-row"><td colspan="13">No signals match the current filters</td></tr>';
     } else {
         tbody.innerHTML = slice.map(s => {
             const entryPrice = s.price ?? s.trigger_price;
@@ -652,6 +653,7 @@ function renderTable() {
               <td class="sym">${s.symbol}</td>
               <td>${badge(s.action, s.action)}</td>
               <td class="mono dim" style="font-size:.75rem">${s.pattern_type || '<span class="dim">—</span>'}</td>
+              <td class="mono dim">${s.interval || '<span class="dim">—</span>'}</td>
               <td style="white-space:nowrap">${sessionTags(s.timestamp)}</td>
               <td>${fmtPrice(entryPrice)}</td>
               <td>${tpCell}</td>
@@ -681,14 +683,14 @@ function changePage(delta) {
 
 // ── Export CSV ────────────────────────────────────────────────────────────────
 function exportCSV() {
-    const headers = ['Date','Symbol','Action','Pattern','Rule','Session','Entry','TP','TP%','Status','Fill Time','Completion','Order ID'];
+    const headers = ['Date','Symbol','Action','Pattern','Interval','Rule','Session','Entry','TP','TP%','Status','Fill Time','Completion','Order ID'];
     const rows = filteredSigs.map(s => {
         const sessions = classifySessions(s.timestamp).join('; ');
         const rule     = extractRule(s.pattern_type);
         const tpPct    = (s.price && s.take_profit) ? ((s.take_profit / s.price - 1) * 100).toFixed(2) : '';
         return [
             s.timestamp || '', s.symbol || '', s.action || '', s.pattern_type || '',
-            rule, sessions,
+            s.interval || '', rule, sessions,
             s.price ?? s.trigger_price ?? '', s.take_profit || '', tpPct,
             s.status || '', s.entry_fill_time || '', s.completion_time || '', s.order_id || '',
         ];

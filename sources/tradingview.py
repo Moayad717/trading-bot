@@ -18,6 +18,7 @@ _STOP_LOSS_KEYS     = ("stop_loss", "sl", "stop", "stoploss")
 _TAKE_PROFIT_KEYS   = ("take_profit", "tp", "target", "takeprofit")
 _TRIGGER_PRICE_KEYS = ("trigger_price", "trigger")
 _PATTERN_TYPE_KEYS  = ("pattern", "pattern_type", "rule_type", "rule")
+_INTERVAL_KEYS      = ("interval",)
 
 _BUY_ALIASES  = {"buy", "long", "bull", "bullish", "1", "entry_long", "enter_long"}
 _SELL_ALIASES = {"sell", "short", "bear", "bearish", "-1", "entry_short", "enter_short"}
@@ -116,6 +117,9 @@ def parse(payload: Dict[str, Any]) -> SignalCreate:
     raw_pattern = _find(payload, _PATTERN_TYPE_KEYS)
     pattern_type: Optional[str] = str(raw_pattern).strip() if raw_pattern and not isinstance(raw_pattern, dict) else None
 
+    raw_interval = _find(payload, _INTERVAL_KEYS)
+    interval: Optional[str] = str(raw_interval).strip() if raw_interval is not None else None
+
     # Stop loss — flat fields only
     stop_loss = _to_float(_find(payload, _STOP_LOSS_KEYS), "stop_loss")
 
@@ -156,4 +160,5 @@ def parse(payload: Dict[str, Any]) -> SignalCreate:
         take_profit=take_profit,
         trigger_price=trigger_price,
         pattern_type=pattern_type,
+        interval=interval,
     )

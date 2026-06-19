@@ -36,6 +36,7 @@ _MIGRATIONS = [
     ("tp_order_id",     "TEXT"),
     ("entry_fill_time", "DATETIME"),
     ("completion_time", "DATETIME"),
+    ("interval",        "TEXT"),
 ]
 
 
@@ -64,8 +65,8 @@ async def insert_signal(signal: Signal) -> int:
             INSERT INTO signals
                 (timestamp, action, symbol, quantity, price, order_type, category,
                  status, exchange, order_id, source, error_message, stop_loss, take_profit,
-                 trigger_price, pattern_type)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 trigger_price, pattern_type, interval)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 signal.timestamp.isoformat(),
@@ -84,6 +85,7 @@ async def insert_signal(signal: Signal) -> int:
                 signal.take_profit,
                 signal.trigger_price,
                 signal.pattern_type,
+                signal.interval,
             ),
         )
         await db.commit()

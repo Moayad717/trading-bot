@@ -40,6 +40,7 @@ class SignalCreate(BaseModel):
     take_profit: Optional[float] = None
     trigger_price: Optional[float] = None
     pattern_type: Optional[str] = None
+    interval: Optional[str] = None
 
     @field_validator("symbol")
     @classmethod
