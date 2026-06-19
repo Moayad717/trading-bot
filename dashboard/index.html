@@ -356,6 +356,20 @@
                     <option value="Unknown">Unknown</option>
                 </select>
                 <div class="filter-sep"></div>
+                <span class="filter-label">Interval</span>
+                <select id="f-interval" class="filter-select" onchange="applyFilters()">
+                    <option value="all">All</option>
+                    <option value="1">1</option>
+                    <option value="3">3</option>
+                    <option value="5">5</option>
+                    <option value="15">15</option>
+                    <option value="30">30</option>
+                    <option value="60">60</option>
+                    <option value="120">120</option>
+                    <option value="240">240</option>
+                    <option value="D">D</option>
+                </select>
+                <div class="filter-sep"></div>
                 <span class="filter-label">Session</span>
                 <select id="f-session" class="filter-select" onchange="applyFilters()">
                     <option value="all">All</option>
@@ -563,18 +577,20 @@ function applyFilters() {
     const symbol  = document.getElementById('f-symbol').value.trim().toUpperCase();
     const status  = document.getElementById('f-status').value;
     const dir     = document.getElementById('f-direction').value;
-    const rule    = document.getElementById('f-rule').value;
-    const session = document.getElementById('f-session').value;
+    const rule     = document.getElementById('f-rule').value;
+    const interval = document.getElementById('f-interval').value;
+    const session  = document.getElementById('f-session').value;
 
     filteredSigs = allSignals.filter(s => {
         const d = (s.timestamp || '').slice(0, 10);
-        if (from   && d < from) return false;
-        if (to     && d > to)   return false;
-        if (symbol && !s.symbol?.includes(symbol)) return false;
-        if (status !== 'all' && s.status !== status) return false;
-        if (dir    !== 'all' && s.action !== dir)   return false;
-        if (rule   !== 'all' && extractRule(s.pattern_type) !== rule) return false;
-        if (session !== 'all' && !classifySessions(s.timestamp).includes(session)) return false;
+        if (from     && d < from) return false;
+        if (to       && d > to)   return false;
+        if (symbol   && !s.symbol?.includes(symbol)) return false;
+        if (status   !== 'all' && s.status !== status) return false;
+        if (dir      !== 'all' && s.action !== dir)   return false;
+        if (rule     !== 'all' && extractRule(s.pattern_type) !== rule) return false;
+        if (interval !== 'all' && (s.interval || '') !== interval) return false;
+        if (session  !== 'all' && !classifySessions(s.timestamp).includes(session)) return false;
         return true;
     });
 
