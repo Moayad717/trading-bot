@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, List, Optional
+from typing import Any, AsyncGenerator, List, Optional
 
 import aiosqlite
 
@@ -62,7 +63,37 @@ async def get_db() -> AsyncGenerator[aiosqlite.Connection, None]:
         yield db
 
 
-async def insert_signal(signal: Signal) -> int:
+# ── Write queue — serializes all async DB writes through one worker ───────────
+
+_write_queue: asyncio.Queue = asyncio.Queue()
+
+
+async def _enqueue_write(coro: Any) -> Any:
+    loop = asyncio.get_running_loop()
+    fut: asyncio.Future = loop.create_future()
+    await _write_queue.put((coro, fut))
+    return await fut
+
+
+async def _db_write_worker() -> None:
+    while True:
+        coro, fut = await _write_queue.get()
+        try:
+            result = await coro
+            if not fut.done():
+                fut.set_result(result)
+        except Exception as exc:
+            if not fut.done():
+                fut.set_exception(exc)
+
+
+def start_db_write_worker() -> asyncio.Task:
+    return asyncio.create_task(_db_write_worker())
+
+
+# ── Async writes (serialized through queue) ───────────────────────────────────
+
+async def _insert_signal_impl(signal: Signal) -> int:
     async with get_db() as db:
         cursor = await db.execute(
             """
@@ -96,10 +127,11 @@ async def insert_signal(signal: Signal) -> int:
         return cursor.lastrowid or 0
 
 
-# ── Sync helpers (called from WebSocket thread) ───────────────────────────────
+async def insert_signal(signal: Signal) -> int:
+    return await _enqueue_write(_insert_signal_impl(signal))
 
-async def mark_market_order_filled(signal_id: int, order_id: str, fill_time: str) -> None:
-    """Set status=active + order_id + entry_fill_time for a market order that filled instantly."""
+
+async def _mark_market_order_filled_impl(signal_id: int, order_id: str, fill_time: str) -> None:
     async with get_db() as db:
         await db.execute(
             "UPDATE signals SET status='active', order_id=?, entry_fill_time=? WHERE id=?",
@@ -107,6 +139,67 @@ async def mark_market_order_filled(signal_id: int, order_id: str, fill_time: str
         )
         await db.commit()
 
+
+async def mark_market_order_filled(signal_id: int, order_id: str, fill_time: str) -> None:
+    """Set status=active + order_id + entry_fill_time for a market order that filled instantly."""
+    await _enqueue_write(_mark_market_order_filled_impl(signal_id, order_id, fill_time))
+
+
+async def _set_signal_error_impl(signal_id: int, error_message: str) -> None:
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE signals SET error_message=? WHERE id=?",
+            (error_message, signal_id),
+        )
+        await db.commit()
+
+
+async def set_signal_error(signal_id: int, error_message: str) -> None:
+    """Append an error message to a signal without changing its status."""
+    await _enqueue_write(_set_signal_error_impl(signal_id, error_message))
+
+
+async def _set_signal_tp_order_id_impl(signal_id: int, tp_order_id: str) -> None:
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE signals SET tp_order_id=? WHERE id=?",
+            (tp_order_id, signal_id),
+        )
+        await db.commit()
+
+
+async def set_signal_tp_order_id(signal_id: int, tp_order_id: str) -> None:
+    await _enqueue_write(_set_signal_tp_order_id_impl(signal_id, tp_order_id))
+
+
+async def _update_signal_status_impl(
+    signal_id: int,
+    status: SignalStatus,
+    order_id: Optional[str],
+    error_message: Optional[str],
+) -> None:
+    async with get_db() as db:
+        await db.execute(
+            """
+            UPDATE signals
+               SET status = ?, order_id = ?, error_message = ?
+             WHERE id = ?
+            """,
+            (status.value, order_id, error_message, signal_id),
+        )
+        await db.commit()
+
+
+async def update_signal_status(
+    signal_id: int,
+    status: SignalStatus,
+    order_id: Optional[str] = None,
+    error_message: Optional[str] = None,
+) -> None:
+    await _enqueue_write(_update_signal_status_impl(signal_id, status, order_id, error_message))
+
+
+# ── Sync helpers (called from WebSocket thread) ───────────────────────────────
 
 def mark_entry_filled_sync(order_id: str, fill_time: str) -> bool:
     """Transition OPEN → ACTIVE and record fill timestamp. Returns True if updated."""
@@ -164,16 +257,10 @@ def get_tp_info_sync(order_id: str) -> Optional[dict]:
     return {"take_profit": row[0], "symbol": row[1], "action": row[2], "category": row[3]}
 
 
-# ── Async helpers (called from FastAPI routes) ────────────────────────────────
+# ── Async reads (bypass queue — SQLite handles concurrent reads fine) ─────────
 
-async def set_signal_error(signal_id: int, error_message: str) -> None:
-    """Append an error message to a signal without changing its status."""
-    async with get_db() as db:
-        await db.execute(
-            "UPDATE signals SET error_message=? WHERE id=?",
-            (error_message, signal_id),
-        )
-        await db.commit()
+def _row_to_dict(row: aiosqlite.Row) -> dict:
+    return dict(row)
 
 
 async def get_naked_active_positions() -> List[dict]:
@@ -190,37 +277,6 @@ async def get_naked_active_positions() -> List[dict]:
         )
         rows = await cursor.fetchall()
         return [_row_to_dict(r) for r in rows]
-
-
-async def set_signal_tp_order_id(signal_id: int, tp_order_id: str) -> None:
-    async with get_db() as db:
-        await db.execute(
-            "UPDATE signals SET tp_order_id=? WHERE id=?",
-            (tp_order_id, signal_id),
-        )
-        await db.commit()
-
-
-async def update_signal_status(
-    signal_id: int,
-    status: SignalStatus,
-    order_id: Optional[str] = None,
-    error_message: Optional[str] = None,
-) -> None:
-    async with get_db() as db:
-        await db.execute(
-            """
-            UPDATE signals
-               SET status = ?, order_id = ?, error_message = ?
-             WHERE id = ?
-            """,
-            (status.value, order_id, error_message, signal_id),
-        )
-        await db.commit()
-
-
-def _row_to_dict(row: aiosqlite.Row) -> dict:
-    return dict(row)
 
 
 async def get_all_signals() -> List[dict]:

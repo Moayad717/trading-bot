@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from config import settings
 from dashboard.routes import router as dashboard_router
-from db import get_naked_active_positions, init_db_sync, set_signal_error, set_signal_tp_order_id
+from db import init_db_sync, start_db_write_worker
 from exchanges.bybit import BybitExchange
 from order_tracker import OrderTracker
 from routers.webhook import router as webhook_router
@@ -26,48 +26,88 @@ logger = logging.getLogger(__name__)
 tracker = OrderTracker(exchange=BybitExchange())
 
 
-async def _reconcile_naked_positions() -> None:
-    """Every 60 s, find active positions with no TP order and retry placing it."""
+async def _reconcile_positions() -> None:
+    """Every 60 s, reconcile open Bybit positions against active TP orders directly.
+
+    Approach: position-level, not signal-level. Catches naked positions regardless
+    of whether they have a DB record (e.g. after a DB write failure).
+
+    Steps:
+      1. Fetch all open positions from Bybit.
+      2. Fetch all active open orders; sum reduce-only qty per (symbol, side).
+      3. For each position: naked_qty = position_size - covered_tp_qty.
+         If naked_qty > 0, place a reduce-only limit TP (+0.5% long / -0.5% short).
+      4. Log any recently cancelled/rejected reduce-only orders as warnings
+         (replacements are handled implicitly by step 3 on the next or same cycle).
+    """
     exchange = BybitExchange()
     while True:
         await asyncio.sleep(60)
         try:
-            naked = await get_naked_active_positions()
-            if not naked:
+            # 1. Open positions (USDT-settled linear perps)
+            positions = exchange.get_positions(category="linear", settle_coin="USDT")
+            active = [p for p in positions if float(p.get("size", 0)) > 0]
+            if not active:
                 continue
-            logger.info("Reconciliation: found %d naked position(s)", len(naked))
-            for pos in naked:
-                if not pos["take_profit"] or not pos["order_id"]:
+
+            # 2. Active open orders — build covered-TP map keyed by (symbol, tp_order_side)
+            open_orders = exchange.get_open_orders(category="linear", settle_coin="USDT")
+            covered: dict[tuple[str, str], float] = {}
+            for o in open_orders:
+                if o.get("reduceOnly"):
+                    key = (o["symbol"], o["side"])
+                    covered[key] = covered.get(key, 0.0) + float(o.get("qty", 0))
+
+            # 3. Place TP for any uncovered position qty
+            for pos in active:
+                symbol       = pos["symbol"]
+                pos_side     = pos["side"]          # "Buy" (long) or "Sell" (short)
+                size         = float(pos["size"])
+                avg_price    = float(pos["avgPrice"])
+                position_idx = 1 if pos_side == "Buy" else 2
+                tp_side      = "Sell" if pos_side == "Buy" else "Buy"
+
+                covered_qty = covered.get((symbol, tp_side), 0.0)
+                naked_qty   = round(size - covered_qty, 3)
+
+                if naked_qty <= 0:
                     continue
-                tp_side      = "Sell" if pos["action"] == "buy" else "Buy"
-                position_idx = 1     if pos["action"] == "buy" else 2
+
+                tp_price = round(avg_price * (1.005 if pos_side == "Buy" else 0.995), 2)
+                logger.info(
+                    "Reconciliation: naked position symbol=%s side=%s size=%s covered=%s "
+                    "naked=%s tp_price=%s",
+                    symbol, pos_side, size, covered_qty, naked_qty, tp_price,
+                )
                 try:
-                    tp_result = exchange.place_tp_order(
-                        symbol=pos["symbol"],
+                    result = exchange.place_tp_order(
+                        symbol=symbol,
                         side=tp_side,
-                        qty=pos["quantity"],
-                        price=pos["take_profit"],
+                        qty=naked_qty,
+                        price=tp_price,
                         position_idx=position_idx,
-                        category=pos["category"],
+                        category="linear",
                     )
-                    tp_oid = tp_result.get("order_id", "")
-                    if tp_oid:
-                        await set_signal_tp_order_id(pos["id"], tp_oid)
-                        logger.info(
-                            "Reconciliation: TP placed signal_id=%s order_id=%s tp_id=%s",
-                            pos["id"], pos["order_id"], tp_oid,
-                        )
-                    else:
-                        logger.warning(
-                            "Reconciliation: TP placed but no order_id returned for signal_id=%s",
-                            pos["id"],
-                        )
+                    logger.info(
+                        "Reconciliation: TP placed symbol=%s side=%s qty=%s price=%s tp_id=%s",
+                        symbol, tp_side, naked_qty, tp_price, result.get("order_id"),
+                    )
                 except Exception as exc:
                     logger.error(
-                        "Reconciliation: TP failed signal_id=%s order_id=%s error=%s",
-                        pos["id"], pos["order_id"], exc,
+                        "Reconciliation: failed to place TP symbol=%s side=%s qty=%s error=%s",
+                        symbol, tp_side, naked_qty, exc,
                     )
-                    await set_signal_error(pos["id"], f"Reconciliation TP failed: {exc}")
+
+            # 4. Warn on recently cancelled/rejected reduce-only orders
+            history = exchange.get_order_history(category="linear", settle_coin="USDT", limit=50)
+            for o in history:
+                if o.get("reduceOnly") and o.get("orderStatus") in ("Cancelled", "Rejected"):
+                    logger.warning(
+                        "Reconciliation: %s TP detected symbol=%s order_id=%s "
+                        "— position check will replace if position still open",
+                        o["orderStatus"], o["symbol"], o.get("orderId"),
+                    )
+
         except Exception as exc:
             logger.error("Reconciliation watchdog error: %s", exc)
 
@@ -78,9 +118,11 @@ async def lifespan(app: FastAPI):
     mode = "TESTNET" if settings.TESTNET else "LIVE"
     logger.info("Trading bot started — exchange=%s mode=%s", settings.active_exchange, mode)
     tracker.start()
-    watchdog = asyncio.create_task(_reconcile_naked_positions())
+    write_worker = start_db_write_worker()
+    watchdog = asyncio.create_task(_reconcile_positions())
     yield
     watchdog.cancel()
+    write_worker.cancel()
     tracker.stop()
     logger.info("Trading bot stopped")
 

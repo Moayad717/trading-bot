@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from pybit.unified_trading import HTTP
 
@@ -80,6 +80,30 @@ class BybitExchange(BaseExchange):
             "status": result.get("orderStatus", ""),
             "raw": response,
         }
+
+    def get_positions(self, category: str = "linear", settle_coin: str = "USDT") -> List[Dict[str, Any]]:
+        """Return all open positions for the given settle currency."""
+        response: Any = self._client.get_positions(category=category, settleCoin=settle_coin)
+        self._raise_for_error(response)
+        return response.get("result", {}).get("list", [])
+
+    def get_open_orders(self, category: str = "linear", settle_coin: str = "USDT") -> List[Dict[str, Any]]:
+        """Return all active orders (limit 50) for the given settle currency."""
+        response: Any = self._client.get_open_orders(
+            category=category, settleCoin=settle_coin, limit=50
+        )
+        self._raise_for_error(response)
+        return response.get("result", {}).get("list", [])
+
+    def get_order_history(
+        self, category: str = "linear", settle_coin: str = "USDT", limit: int = 50
+    ) -> List[Dict[str, Any]]:
+        """Return recent order history (most recent first) for the given settle currency."""
+        response: Any = self._client.get_order_history(
+            category=category, settleCoin=settle_coin, limit=limit
+        )
+        self._raise_for_error(response)
+        return response.get("result", {}).get("list", [])
 
     def cancel_order(self, order_id: str, symbol: str) -> Dict[str, Any]:
         response: Any = self._client.cancel_order(
