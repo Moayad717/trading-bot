@@ -41,7 +41,9 @@ _MIGRATIONS = [
 
 
 def init_db_sync() -> None:
-    with sqlite3.connect(settings.DB_PATH) as conn:
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
         conn.execute(_CREATE_TABLE)
         for col, typedef in _MIGRATIONS:
             try:
@@ -55,6 +57,8 @@ def init_db_sync() -> None:
 async def get_db() -> AsyncGenerator[aiosqlite.Connection, None]:
     async with aiosqlite.connect(settings.DB_PATH) as db:
         db.row_factory = aiosqlite.Row
+        await db.execute("PRAGMA journal_mode=WAL")
+        await db.execute("PRAGMA busy_timeout=5000")
         yield db
 
 
@@ -106,7 +110,7 @@ async def mark_market_order_filled(signal_id: int, order_id: str, fill_time: str
 
 def mark_entry_filled_sync(order_id: str, fill_time: str) -> bool:
     """Transition OPEN → ACTIVE and record fill timestamp. Returns True if updated."""
-    with sqlite3.connect(settings.DB_PATH) as conn:
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
         cur = conn.execute(
             "UPDATE signals SET status='active', entry_fill_time=? WHERE order_id=? AND status='open'",
             (fill_time, order_id),
@@ -117,7 +121,7 @@ def mark_entry_filled_sync(order_id: str, fill_time: str) -> bool:
 
 def set_tp_order_id_sync(order_id: str, tp_order_id: str) -> None:
     """Store the TP order ID so we can match its fill event later."""
-    with sqlite3.connect(settings.DB_PATH) as conn:
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
         conn.execute(
             "UPDATE signals SET tp_order_id=? WHERE order_id=?",
             (tp_order_id, order_id),
@@ -127,7 +131,7 @@ def set_tp_order_id_sync(order_id: str, tp_order_id: str) -> None:
 
 def mark_tp_completed_sync(tp_order_id: str, completion_time: str) -> bool:
     """Transition ACTIVE → COMPLETED and record completion timestamp. Returns True if updated."""
-    with sqlite3.connect(settings.DB_PATH) as conn:
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
         cur = conn.execute(
             "UPDATE signals SET status='completed', completion_time=? WHERE tp_order_id=? AND status='active'",
             (completion_time, tp_order_id),
@@ -138,7 +142,7 @@ def mark_tp_completed_sync(tp_order_id: str, completion_time: str) -> bool:
 
 def update_order_status_sync(order_id: str, new_status: SignalStatus) -> bool:
     """Generic sync update — used for FAILED transitions (cancelled/rejected/expired)."""
-    with sqlite3.connect(settings.DB_PATH) as conn:
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
         cur = conn.execute(
             "UPDATE signals SET status = ? WHERE order_id = ? AND status IN ('open', 'active')",
             (new_status.value, order_id),
@@ -149,7 +153,7 @@ def update_order_status_sync(order_id: str, new_status: SignalStatus) -> bool:
 
 def get_tp_info_sync(order_id: str) -> Optional[dict]:
     """Return TP placement data for a filled entry order. Called from WebSocket thread."""
-    with sqlite3.connect(settings.DB_PATH) as conn:
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
         cur = conn.execute(
             "SELECT take_profit, symbol, action, category FROM signals WHERE order_id = ?",
             (order_id,),
@@ -161,6 +165,41 @@ def get_tp_info_sync(order_id: str) -> Optional[dict]:
 
 
 # ── Async helpers (called from FastAPI routes) ────────────────────────────────
+
+async def set_signal_error(signal_id: int, error_message: str) -> None:
+    """Append an error message to a signal without changing its status."""
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE signals SET error_message=? WHERE id=?",
+            (error_message, signal_id),
+        )
+        await db.commit()
+
+
+async def get_naked_active_positions() -> List[dict]:
+    """Return active signals that have filled but have no TP order placed yet."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT id, order_id, symbol, action, quantity, take_profit, category
+              FROM signals
+             WHERE status = 'active'
+               AND tp_order_id IS NULL
+               AND entry_fill_time IS NOT NULL
+            """
+        )
+        rows = await cursor.fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+
+async def set_signal_tp_order_id(signal_id: int, tp_order_id: str) -> None:
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE signals SET tp_order_id=? WHERE id=?",
+            (tp_order_id, signal_id),
+        )
+        await db.commit()
+
 
 async def update_signal_status(
     signal_id: int,

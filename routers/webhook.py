@@ -6,7 +6,7 @@ from typing import Any, Dict
 from fastapi import APIRouter, HTTPException, Request, status
 
 from config import now_local, settings
-from db import insert_signal, mark_market_order_filled, set_tp_order_id_sync, update_signal_status
+from db import insert_signal, mark_market_order_filled, set_signal_error, set_tp_order_id_sync, update_signal_status
 from exchanges.bybit import BybitExchange
 from models.signal import Action, OrderType, Signal, SignalStatus
 from sources import tradingview as tv_parser
@@ -117,6 +117,7 @@ async def tradingview_webhook(request: Request) -> Dict[str, Any]:
             except Exception as exc:
                 logger.error("Market TP failed: entry_id=%s symbol=%s error=%s",
                              order_id, signal_create.symbol, exc)
+                await set_signal_error(signal_id, f"TP placement failed: {exc}")
     else:
         # Limit order: sits on the book; WebSocket handles fill → ACTIVE → TP → COMPLETED.
         await update_signal_status(signal_id, status=SignalStatus.OPEN, order_id=order_id)
