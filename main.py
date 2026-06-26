@@ -50,8 +50,8 @@ async def _reconcile_positions() -> None:
             if not active:
                 continue
 
-            # 2. Active open orders — build covered-TP map keyed by (symbol, tp_order_side)
-            open_orders = exchange.get_open_orders(category="linear", settle_coin="USDT")
+            # 2. Active open orders (all pages) — build covered-TP map keyed by (symbol, tp_order_side)
+            open_orders = exchange.get_all_open_orders(category="linear", settle_coin="USDT")
             covered: dict[tuple[str, str], float] = {}
             for o in open_orders:
                 if o.get("reduceOnly"):
@@ -74,6 +74,14 @@ async def _reconcile_positions() -> None:
                     continue
 
                 tp_price = round(avg_price * (1.005 if pos_side == "Buy" else 0.995), 2)
+
+                if naked_qty * tp_price < 5.0:
+                    logger.info(
+                        "Reconciliation: skip TP symbol=%s side=%s qty=%s price=%s "
+                        "notional=%.4f below minimum 5 USDT",
+                        symbol, pos_side, naked_qty, tp_price, naked_qty * tp_price,
+                    )
+                    continue
                 logger.info(
                     "Reconciliation: naked position symbol=%s side=%s size=%s covered=%s "
                     "naked=%s tp_price=%s",

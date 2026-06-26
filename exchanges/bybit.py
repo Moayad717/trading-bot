@@ -88,12 +88,33 @@ class BybitExchange(BaseExchange):
         return response.get("result", {}).get("list", [])
 
     def get_open_orders(self, category: str = "linear", settle_coin: str = "USDT") -> List[Dict[str, Any]]:
-        """Return all active orders (limit 50) for the given settle currency."""
+        """Return active orders for one page (limit 50). Use get_all_open_orders for full list."""
         response: Any = self._client.get_open_orders(
             category=category, settleCoin=settle_coin, limit=50
         )
         self._raise_for_error(response)
         return response.get("result", {}).get("list", [])
+
+    def get_all_open_orders(self, category: str = "linear", settle_coin: str = "USDT") -> List[Dict[str, Any]]:
+        """Return all active orders across all pages by following the cursor."""
+        orders: List[Dict[str, Any]] = []
+        cursor: str = ""
+        while True:
+            params: Dict[str, Any] = {
+                "category": category,
+                "settleCoin": settle_coin,
+                "limit": 50,
+            }
+            if cursor:
+                params["cursor"] = cursor
+            response: Any = self._client.get_open_orders(**params)
+            self._raise_for_error(response)
+            result = response.get("result", {})
+            orders.extend(result.get("list", []))
+            cursor = result.get("nextPageCursor", "")
+            if not cursor:
+                break
+        return orders
 
     def get_order_history(
         self, category: str = "linear", settle_coin: str = "USDT", limit: int = 50
