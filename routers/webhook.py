@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Dict
 
 from fastapi import APIRouter, HTTPException, Request, status
@@ -26,6 +27,24 @@ def _get_exchange():
     if cls is None:
         raise RuntimeError(f"Unknown exchange: {settings.active_exchange}")
     return cls()
+
+
+_recent_signals: dict[str, float] = {}
+_DEDUP_WINDOW = 60.0  # seconds
+
+
+def _is_duplicate(key: str) -> bool:
+    """Return True if key fired within the dedup window; register it and return False otherwise.
+    Evicts expired entries on every call to keep the dict bounded.
+    """
+    now = time.time()
+    expired = [k for k, ts in _recent_signals.items() if now - ts >= _DEDUP_WINDOW]
+    for k in expired:
+        del _recent_signals[k]
+    if now - _recent_signals.get(key, 0.0) < _DEDUP_WINDOW:
+        return True
+    _recent_signals[key] = now
+    return False
 
 
 def _verify_secret(request: Request) -> None:
@@ -56,6 +75,14 @@ async def tradingview_webhook(request: Request) -> Dict[str, Any]:
     if dry_run:
         logger.info("Dry run — parsed OK, no order placed: %s", signal_create.model_dump())
         return {"dry_run": True, "parsed": signal_create.model_dump()}
+
+    dedup_key = (
+        f"{signal_create.symbol}-{signal_create.action.value}"
+        f"-{payload.get('rule_type', '')}-{signal_create.interval or ''}"
+    )
+    if _is_duplicate(dedup_key):
+        logger.info("Webhook rejected: duplicate signal key=%s", dedup_key)
+        return {"status": "rejected", "reason": "duplicate signal within dedup window"}
 
     exchange = _get_exchange()
     signal = Signal(
