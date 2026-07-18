@@ -7,8 +7,6 @@ from pybit.unified_trading import WebSocket
 
 from config import now_local, settings
 from db import (
-    bulk_complete_signals_sync,
-    get_active_signals_for_symbol_sync,
     get_tp_info_sync,
     mark_entry_filled_sync,
     mark_tp_completed_sync,
@@ -82,11 +80,9 @@ class OrderTracker:
                     logger.info("Order %s: order_id=%s", bybit_status.lower(), order_id)
 
     def _handle_fill(self, order: Dict[str, Any]) -> None:
-        order_id    = order.get("orderId", "")
-        fill_time   = _now_local_iso()
-        reduce_only = order.get("reduceOnly", False)
+        order_id  = order.get("orderId", "")
+        fill_time = _now_local_iso()
 
-        # Try entry fill first (matches rows with status='open')
         was_entry = mark_entry_filled_sync(order_id, fill_time)
         if was_entry:
             logger.info(
@@ -96,71 +92,11 @@ class OrderTracker:
             self._maybe_place_tp(order)
             return
 
-        # TP fill — may be signal-linked or a bulk watchdog TP with no matching tp_order_id
-        was_signal_tp = mark_tp_completed_sync(order_id, fill_time)
-        if was_signal_tp:
+        was_tp = mark_tp_completed_sync(order_id, fill_time)
+        if was_tp:
             logger.info(
                 "TP filled → position completed: tp_order_id=%s symbol=%s",
                 order_id, order.get("symbol"),
-            )
-
-        # After any reduce-only fill, reconcile DB against Bybit position size.
-        # This catches bulk watchdog TPs that cover multiple signals at once.
-        if reduce_only:
-            symbol  = order.get("symbol", "")
-            tp_side = order.get("side", "")  # TP order side — opposite of position side
-            if symbol and tp_side:
-                position_side = "Sell" if tp_side == "Buy" else "Buy"
-                self._reconcile_tp_fill(symbol, position_side, fill_time)
-
-    def _reconcile_tp_fill(self, symbol: str, position_side: str, fill_time: str) -> None:
-        """Compare Bybit's live position size against active DB signals and mark the
-        excess as completed FIFO (oldest entry_fill_time first).
-
-        Called after every reduce-only fill so bulk watchdog TPs (which may cover
-        several individual signals at once) are fully reflected in the dashboard.
-        """
-        if self._exchange is None:
-            return
-
-        action = "buy" if position_side == "Buy" else "sell"
-
-        try:
-            bybit_size = self._exchange.get_position_size(symbol, position_side)
-        except Exception as exc:
-            logger.error(
-                "TP reconciliation: failed to get position size symbol=%s: %s", symbol, exc
-            )
-            return
-
-        active = get_active_signals_for_symbol_sync(symbol, action)
-        if not active:
-            return
-
-        db_qty   = sum(float(s["quantity"]) for s in active)
-        closed   = round(db_qty - bybit_size, 8)
-
-        if closed <= 0:
-            return
-
-        logger.info(
-            "TP reconciliation: symbol=%s bybit_size=%s db_active=%s to_close=%s",
-            symbol, bybit_size, db_qty, closed,
-        )
-
-        # Walk FIFO (oldest first), accumulate until we've covered closed qty
-        to_complete: list[int] = []
-        accumulated = 0.0
-        for sig in active:
-            if accumulated >= closed:
-                break
-            to_complete.append(sig["id"])
-            accumulated += float(sig["quantity"])
-
-        if to_complete:
-            n = bulk_complete_signals_sync(to_complete, fill_time)
-            logger.info(
-                "TP reconciliation: marked %d signal(s) completed symbol=%s", n, symbol
             )
 
     def _maybe_place_tp(self, order: Dict[str, Any]) -> None:
