@@ -81,6 +81,41 @@ class BybitExchange(BaseExchange):
             "raw": response,
         }
 
+    def get_execution_history(
+        self, symbol: str, category: str = "linear", limit: int = 200
+    ) -> List[Dict[str, Any]]:
+        """Return position-closing executions (closedSize > 0) for a symbol, newest first.
+        Paginates automatically — Bybit caps each page at 100.
+        Each returned dict has: orderId, execTime (ms str), closedSize, side.
+        """
+        results: List[Dict[str, Any]] = []
+        cursor: str = ""
+        remaining = limit
+        while remaining > 0:
+            params: Dict[str, Any] = {
+                "category": category,
+                "symbol":   symbol,
+                "limit":    min(remaining, 100),
+            }
+            if cursor:
+                params["cursor"] = cursor
+            response: Any = self._client.get_executions(**params)
+            self._raise_for_error(response)
+            page_result = response.get("result", {})
+            for ex in page_result.get("list", []):
+                if float(ex.get("closedSize", 0)) > 0:
+                    results.append({
+                        "orderId":    ex["orderId"],
+                        "execTime":   ex["execTime"],
+                        "closedSize": ex["closedSize"],
+                        "side":       ex["side"],
+                    })
+            cursor     = page_result.get("nextPageCursor", "")
+            remaining -= min(remaining, 100)
+            if not cursor:
+                break
+        return results
+
     def get_position_size(self, symbol: str, side: str, category: str = "linear") -> float:
         """Return the current open position size for a specific symbol and side ('Buy'/'Sell')."""
         response: Any = self._client.get_positions(category=category, symbol=symbol)

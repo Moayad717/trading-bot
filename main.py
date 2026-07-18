@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 import uvicorn
 from fastapi import FastAPI
@@ -11,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from config import settings
 from dashboard.routes import router as dashboard_router
-from db import init_db_sync, start_db_write_worker
+from db import complete_signal_async, get_active_signals_with_tp, init_db_sync, start_db_write_worker
 from exchanges.bybit import BybitExchange
 from order_tracker import OrderTracker
 from routers.webhook import router as webhook_router
@@ -120,6 +121,61 @@ async def _reconcile_positions() -> None:
             logger.error("Reconciliation watchdog error: %s", exc)
 
 
+async def reconcile_db_with_executions() -> int:
+    """Match active DB signals against Bybit execution history and mark completed ones.
+
+    Uses actual Bybit trade records (tp_order_id matched against closedSize > 0
+    executions), so it is exact — no size comparisons or FIFO guessing.
+    Returns the number of signals fixed.
+    """
+    exchange = BybitExchange()
+    try:
+        executions = exchange.get_execution_history("LINKUSDT", category="linear", limit=200)
+    except Exception as exc:
+        logger.error("Execution reconciliation: failed to fetch executions: %s", exc)
+        return 0
+
+    if not executions:
+        return 0
+
+    # Build orderId → ISO completion time from execution timestamps (milliseconds)
+    closed_map: dict[str, str] = {
+        ex["orderId"]: datetime.fromtimestamp(
+            int(ex["execTime"]) / 1000, tz=timezone.utc
+        ).replace(tzinfo=None).isoformat()
+        for ex in executions
+    }
+
+    signals = await get_active_signals_with_tp()
+    fixed = 0
+    for sig in signals:
+        tp_oid = sig["tp_order_id"]
+        if tp_oid in closed_map:
+            await complete_signal_async(sig["id"], closed_map[tp_oid])
+            logger.info(
+                "Execution reconciliation: fixed signal_id=%s tp_order_id=%s completed_at=%s",
+                sig["id"], tp_oid, closed_map[tp_oid],
+            )
+            fixed += 1
+
+    if fixed:
+        logger.info("Execution reconciliation: %d signal(s) marked completed", fixed)
+    else:
+        logger.debug("Execution reconciliation: nothing to fix")
+
+    return fixed
+
+
+async def _execution_sync_loop() -> None:
+    """Run execution reconciliation every 5 minutes."""
+    while True:
+        await asyncio.sleep(300)
+        try:
+            await reconcile_db_with_executions()
+        except Exception as exc:
+            logger.error("Execution sync loop error: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db_sync()
@@ -127,8 +183,11 @@ async def lifespan(app: FastAPI):
     logger.info("Trading bot started — exchange=%s mode=%s", settings.active_exchange, mode)
     tracker.start()
     write_worker = start_db_write_worker()
-    watchdog = asyncio.create_task(_reconcile_positions())
+    await reconcile_db_with_executions()  # fix historical backlog on startup
+    watchdog  = asyncio.create_task(_reconcile_positions())
+    exec_sync = asyncio.create_task(_execution_sync_loop())
     yield
+    exec_sync.cancel()
     watchdog.cancel()
     write_worker.cancel()
     tracker.stop()
@@ -161,6 +220,13 @@ async def health() -> dict:
         "exchange": settings.active_exchange,
         "testnet": settings.TESTNET,
     }
+
+
+@app.post("/admin/reconcile", tags=["admin"])
+async def trigger_reconciliation() -> dict:
+    """Manually trigger an execution-based DB reconciliation. Returns count of signals fixed."""
+    fixed = await reconcile_db_with_executions()
+    return {"fixed": fixed}
 
 
 if __name__ == "__main__":

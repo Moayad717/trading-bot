@@ -288,10 +288,39 @@ def bulk_complete_signals_sync(signal_ids: list, completion_time: str) -> int:
         return cur.rowcount
 
 
+async def _complete_signal_impl(signal_id: int, completion_time: str) -> None:
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE signals SET status='completed', completion_time=? WHERE id=? AND status='active'",
+            (completion_time, signal_id),
+        )
+        await db.commit()
+
+
+async def complete_signal_async(signal_id: int, completion_time: str) -> None:
+    """Mark a single signal as completed with the given timestamp. Goes through the write queue."""
+    await _enqueue_write(_complete_signal_impl(signal_id, completion_time))
+
+
 # ── Async reads (bypass queue — SQLite handles concurrent reads fine) ─────────
 
 def _row_to_dict(row: aiosqlite.Row) -> dict:
     return dict(row)
+
+
+async def get_active_signals_with_tp() -> List[dict]:
+    """Return active signals that have a tp_order_id set."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT id, action, tp_order_id, entry_fill_time
+              FROM signals
+             WHERE status = 'active'
+               AND tp_order_id IS NOT NULL
+            """
+        )
+        rows = await cursor.fetchall()
+        return [_row_to_dict(r) for r in rows]
 
 
 async def get_naked_active_positions() -> List[dict]:
