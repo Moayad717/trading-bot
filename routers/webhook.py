@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any, Dict
@@ -85,15 +86,15 @@ async def tradingview_webhook(request: Request) -> Dict[str, Any]:
         return {"status": "rejected", "reason": "duplicate signal within dedup window"}
 
     exchange = _get_exchange()
-    signal = Signal(
-        **signal_create.model_dump(),
-        timestamp=now_local(),
-        exchange=exchange.name,
-        status=SignalStatus.PENDING,
-    )
-    signal_id = await insert_signal(signal)
 
     if settings.PAPER_TRADING:
+        signal = Signal(
+            **signal_create.model_dump(),
+            timestamp=now_local(),
+            exchange=exchange.name,
+            status=SignalStatus.PENDING,
+        )
+        signal_id = await insert_signal(signal)
         await update_signal_status(signal_id, status=SignalStatus.OPEN)
         logger.info("Paper trade recorded: id=%s symbol=%s action=%s",
                     signal_id, signal.symbol, signal.action)
@@ -104,18 +105,48 @@ async def tradingview_webhook(request: Request) -> Dict[str, Any]:
             "exchange": "paper",
         }
 
+    # Place the order on Bybit first so we know the order_id before writing to DB.
     try:
         result = exchange.place_order(signal_create)
     except Exception as exc:
         error_msg = str(exc)
-        await update_signal_status(signal_id, status=SignalStatus.FAILED, error_message=error_msg)
-        logger.error("Order failed: id=%s symbol=%s error=%s", signal_id, signal.symbol, error_msg)
+        logger.error("Order failed: symbol=%s error=%s", signal_create.symbol, error_msg)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail={"signal_id": signal_id, "error": error_msg},
+            detail={"error": error_msg},
         )
 
     order_id = result.get("order_id", "")
+
+    # Persist the signal to DB — retry up to 3 times so a transient write-queue
+    # stall does not leave a live Bybit order with no dashboard record.
+    signal = Signal(
+        **signal_create.model_dump(),
+        timestamp=now_local(),
+        exchange=exchange.name,
+        status=SignalStatus.PENDING,
+    )
+    signal_id: int = 0
+    for attempt in range(3):
+        try:
+            signal_id = await insert_signal(signal)
+            break
+        except Exception as exc:
+            if attempt == 2:
+                logger.critical(
+                    "CRITICAL: order placed on Bybit but DB insert failed after 3 attempts — "
+                    "manual reconciliation required! symbol=%s order_id=%s error=%s",
+                    signal_create.symbol, order_id, exc,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail={"error": "order placed but DB record failed", "order_id": order_id},
+                )
+            logger.warning(
+                "DB insert attempt %d/3 failed (symbol=%s): %s — retrying",
+                attempt + 1, signal_create.symbol, exc,
+            )
+            await asyncio.sleep(0.3 * (attempt + 1))
 
     if signal_create.order_type == OrderType.MARKET:
         # Market orders fill instantly — mark active and place TP immediately.

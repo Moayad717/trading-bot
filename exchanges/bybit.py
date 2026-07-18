@@ -81,6 +81,15 @@ class BybitExchange(BaseExchange):
             "raw": response,
         }
 
+    def get_position_size(self, symbol: str, side: str, category: str = "linear") -> float:
+        """Return the current open position size for a specific symbol and side ('Buy'/'Sell')."""
+        response: Any = self._client.get_positions(category=category, symbol=symbol)
+        self._raise_for_error(response)
+        for pos in response.get("result", {}).get("list", []):
+            if pos.get("side") == side:
+                return float(pos.get("size", 0))
+        return 0.0
+
     def get_positions(self, category: str = "linear", settle_coin: str = "USDT") -> List[Dict[str, Any]]:
         """Return all open positions for the given settle currency."""
         response: Any = self._client.get_positions(category=category, settleCoin=settle_coin)

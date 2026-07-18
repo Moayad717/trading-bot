@@ -257,6 +257,37 @@ def get_tp_info_sync(order_id: str) -> Optional[dict]:
     return {"take_profit": row[0], "symbol": row[1], "action": row[2], "category": row[3]}
 
 
+def get_active_signals_for_symbol_sync(symbol: str, action: str) -> list:
+    """Return active signals for a symbol/action sorted by entry_fill_time ASC (FIFO)."""
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.execute(
+            """
+            SELECT id, quantity, entry_fill_time
+              FROM signals
+             WHERE symbol = ? AND action = ? AND status = 'active'
+             ORDER BY entry_fill_time ASC
+            """,
+            (symbol, action),
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+
+def bulk_complete_signals_sync(signal_ids: list, completion_time: str) -> int:
+    """Mark the given signal IDs as completed. Returns count of rows updated."""
+    if not signal_ids:
+        return 0
+    placeholders = ",".join("?" * len(signal_ids))
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
+        cur = conn.execute(
+            f"UPDATE signals SET status='completed', completion_time=?"
+            f" WHERE id IN ({placeholders}) AND status='active'",
+            [completion_time, *signal_ids],
+        )
+        conn.commit()
+        return cur.rowcount
+
+
 # ── Async reads (bypass queue — SQLite handles concurrent reads fine) ─────────
 
 def _row_to_dict(row: aiosqlite.Row) -> dict:
