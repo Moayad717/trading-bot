@@ -31,7 +31,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-tracker = OrderTracker(exchange=BybitExchange())
+tracker = OrderTracker()
 
 
 async def _reconcile_positions() -> None:

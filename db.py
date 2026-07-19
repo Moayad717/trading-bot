@@ -257,6 +257,33 @@ def get_tp_info_sync(order_id: str) -> Optional[dict]:
     return {"take_profit": row[0], "symbol": row[1], "action": row[2], "category": row[3]}
 
 
+def link_auto_tp_sync(symbol: str, action: str, qty: float, tp_order_id: str) -> bool:
+    """Match a Bybit auto-created TP order to the most recently filled active signal.
+    Matches by symbol, action, and quantity (within 0.001 tolerance).
+    """
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
+        cur = conn.execute(
+            """
+            SELECT id FROM signals
+             WHERE symbol = ? AND action = ? AND status = 'active'
+               AND tp_order_id IS NULL
+               AND ABS(quantity - ?) < 0.001
+             ORDER BY entry_fill_time DESC
+             LIMIT 1
+            """,
+            (symbol, action, qty),
+        )
+        row = cur.fetchone()
+        if not row:
+            return False
+        conn.execute(
+            "UPDATE signals SET tp_order_id = ? WHERE id = ?",
+            (tp_order_id, row[0]),
+        )
+        conn.commit()
+        return True
+
+
 def get_active_signals_for_symbol_sync(symbol: str, action: str) -> list:
     """Return active signals for a symbol/action sorted by entry_fill_time ASC (FIFO)."""
     with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
