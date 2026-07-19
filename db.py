@@ -308,6 +308,24 @@ def _row_to_dict(row: aiosqlite.Row) -> dict:
     return dict(row)
 
 
+async def get_active_signals_needing_tp(symbol: str, action: str) -> List[dict]:
+    """Return active filled signals for a symbol/action, including their current tp_order_id."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT id, order_id, quantity, take_profit, tp_order_id, category
+              FROM signals
+             WHERE status = 'active'
+               AND symbol = ?
+               AND action = ?
+               AND entry_fill_time IS NOT NULL
+            """,
+            (symbol, action),
+        )
+        rows = await cursor.fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+
 async def get_active_signals_with_tp() -> List[dict]:
     """Return active signals that have a tp_order_id set."""
     async with get_db() as db:

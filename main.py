@@ -12,7 +12,14 @@ from fastapi.staticfiles import StaticFiles
 
 from config import settings
 from dashboard.routes import router as dashboard_router
-from db import complete_signal_async, get_active_signals_with_tp, init_db_sync, start_db_write_worker
+from db import (
+    complete_signal_async,
+    get_active_signals_needing_tp,
+    get_active_signals_with_tp,
+    init_db_sync,
+    set_tp_order_id_sync,
+    start_db_write_worker,
+)
 from exchanges.bybit import BybitExchange
 from order_tracker import OrderTracker
 from routers.webhook import router as webhook_router
@@ -28,45 +35,41 @@ tracker = OrderTracker(exchange=BybitExchange())
 
 
 async def _reconcile_positions() -> None:
-    """Every 60 s, reconcile open Bybit positions against active TP orders directly.
+    """Every 60 s, reconcile open Bybit positions against active TP orders.
 
-    Approach: position-level, not signal-level. Catches naked positions regardless
-    of whether they have a DB record (e.g. after a DB write failure).
-
-    Steps:
-      1. Fetch all open positions from Bybit.
-      2. Fetch all active open orders; sum reduce-only qty per (symbol, side).
-      3. For each position: naked_qty = position_size - covered_tp_qty.
-         If naked_qty > 0, place a reduce-only limit TP (+0.5% long / -0.5% short).
-      4. Log any recently cancelled/rejected reduce-only orders as warnings
-         (replacements are handled implicitly by step 3 on the next or same cycle).
+    For each naked position qty:
+      1. Place individual TP orders for each DB signal that has no TP or a stale one,
+         using each signal's own qty and configured take_profit price.
+         Updates tp_order_id in DB so WebSocket fill events mark exactly that signal.
+      2. Any qty not accounted for by DB signals (ghost positions) gets a single
+         fallback bulk TP at avg_price ±0.5%.
     """
     exchange = BybitExchange()
     while True:
         await asyncio.sleep(60)
         try:
-            # 1. Open positions (USDT-settled linear perps)
             positions = exchange.get_positions(category="linear", settle_coin="USDT")
             active = [p for p in positions if float(p.get("size", 0)) > 0]
             if not active:
                 continue
 
-            # 2. Active open orders (all pages) — build covered-TP map keyed by (symbol, tp_order_side)
             open_orders = exchange.get_all_open_orders(category="linear", settle_coin="USDT")
+            open_order_ids = {o["orderId"] for o in open_orders if "orderId" in o}
+
             covered: dict[tuple[str, str], float] = {}
             for o in open_orders:
                 if o.get("reduceOnly"):
                     key = (o["symbol"], o["side"])
                     covered[key] = covered.get(key, 0.0) + float(o.get("qty", 0))
 
-            # 3. Place TP for any uncovered position qty
             for pos in active:
                 symbol       = pos["symbol"]
-                pos_side     = pos["side"]          # "Buy" (long) or "Sell" (short)
+                pos_side     = pos["side"]
                 size         = float(pos["size"])
                 avg_price    = float(pos["avgPrice"])
                 position_idx = 1 if pos_side == "Buy" else 2
                 tp_side      = "Sell" if pos_side == "Buy" else "Buy"
+                action       = "buy" if pos_side == "Buy" else "sell"
 
                 covered_qty = covered.get((symbol, tp_side), 0.0)
                 naked_qty   = round(size - covered_qty, 3)
@@ -74,46 +77,103 @@ async def _reconcile_positions() -> None:
                 if naked_qty <= 0:
                     continue
 
-                tp_price = round(avg_price * (1.005 if pos_side == "Buy" else 0.995), 2)
+                fallback_tp_price = round(avg_price * (1.005 if pos_side == "Buy" else 0.995), 2)
 
-                if naked_qty * tp_price < 5.0:
-                    logger.info(
-                        "Reconciliation: skip TP symbol=%s side=%s qty=%s price=%s "
-                        "notional=%.4f below minimum 5 USDT",
-                        symbol, pos_side, naked_qty, tp_price, naked_qty * tp_price,
-                    )
-                    continue
                 logger.info(
-                    "Reconciliation: naked position symbol=%s side=%s size=%s covered=%s "
-                    "naked=%s tp_price=%s",
-                    symbol, pos_side, size, covered_qty, naked_qty, tp_price,
+                    "Reconciliation: naked position symbol=%s side=%s size=%s covered=%s naked=%s",
+                    symbol, pos_side, size, covered_qty, naked_qty,
                 )
-                try:
-                    result = exchange.place_tp_order(
-                        symbol=symbol,
-                        side=tp_side,
-                        qty=naked_qty,
-                        price=tp_price,
-                        position_idx=position_idx,
-                        category="linear",
-                    )
-                    logger.info(
-                        "Reconciliation: TP placed symbol=%s side=%s qty=%s price=%s tp_id=%s",
-                        symbol, tp_side, naked_qty, tp_price, result.get("order_id"),
-                    )
-                except Exception as exc:
-                    logger.error(
-                        "Reconciliation: failed to place TP symbol=%s side=%s qty=%s error=%s",
-                        symbol, tp_side, naked_qty, exc,
-                    )
 
-            # 4. Warn on recently cancelled/rejected reduce-only orders
+                # Per-signal TP placement — signals with no TP or a stale one
+                signals = await get_active_signals_needing_tp(symbol, action)
+                signals_needing_tp = [
+                    s for s in signals
+                    if not s.get("tp_order_id") or s["tp_order_id"] not in open_order_ids
+                ]
+
+                remaining = naked_qty
+                for sig in signals_needing_tp:
+                    if remaining <= 0:
+                        break
+
+                    sig_qty   = min(round(float(sig["quantity"]), 3), remaining)
+                    raw_tp    = sig.get("take_profit")
+                    tp_price  = float(raw_tp) if raw_tp is not None else fallback_tp_price
+                    entry_oid = sig.get("order_id", "")
+
+                    if sig_qty * tp_price < 5.0:
+                        logger.info(
+                            "Reconciliation: skip signal TP sig_id=%s symbol=%s qty=%s "
+                            "notional=%.4f below 5 USDT",
+                            sig["id"], symbol, sig_qty, sig_qty * tp_price,
+                        )
+                        continue
+
+                    logger.info(
+                        "Reconciliation: placing TP for sig_id=%s symbol=%s side=%s qty=%s price=%s",
+                        sig["id"], symbol, tp_side, sig_qty, tp_price,
+                    )
+                    try:
+                        result = exchange.place_tp_order(
+                            symbol=symbol,
+                            side=tp_side,
+                            qty=sig_qty,
+                            price=tp_price,
+                            position_idx=position_idx,
+                            category=sig.get("category", "linear"),
+                        )
+                        tp_order_id = result.get("order_id", "")
+                        if tp_order_id and entry_oid:
+                            set_tp_order_id_sync(entry_oid, tp_order_id)
+                        logger.info(
+                            "Reconciliation: TP placed sig_id=%s tp_id=%s symbol=%s",
+                            sig["id"], tp_order_id, symbol,
+                        )
+                        remaining = round(remaining - sig_qty, 8)
+                    except Exception as exc:
+                        logger.error(
+                            "Reconciliation: failed TP for sig_id=%s symbol=%s: %s",
+                            sig["id"], symbol, exc,
+                        )
+
+                # Ghost bulk TP for qty not covered by any DB signal
+                ghost_qty = round(remaining, 3)
+                if ghost_qty > 0:
+                    ghost_notional = ghost_qty * fallback_tp_price
+                    if ghost_notional < 5.0:
+                        logger.info(
+                            "Reconciliation: skip ghost TP symbol=%s qty=%s notional=%.4f below 5 USDT",
+                            symbol, ghost_qty, ghost_notional,
+                        )
+                        continue
+                    logger.info(
+                        "Reconciliation: ghost position symbol=%s side=%s qty=%s tp_price=%s",
+                        symbol, pos_side, ghost_qty, fallback_tp_price,
+                    )
+                    try:
+                        result = exchange.place_tp_order(
+                            symbol=symbol,
+                            side=tp_side,
+                            qty=ghost_qty,
+                            price=fallback_tp_price,
+                            position_idx=position_idx,
+                            category="linear",
+                        )
+                        logger.info(
+                            "Reconciliation: ghost TP placed symbol=%s side=%s qty=%s tp_id=%s",
+                            symbol, tp_side, ghost_qty, result.get("order_id"),
+                        )
+                    except Exception as exc:
+                        logger.error(
+                            "Reconciliation: failed ghost TP symbol=%s side=%s qty=%s: %s",
+                            symbol, tp_side, ghost_qty, exc,
+                        )
+
             history = exchange.get_order_history(category="linear", settle_coin="USDT", limit=50)
             for o in history:
                 if o.get("reduceOnly") and o.get("orderStatus") in ("Cancelled", "Rejected"):
                     logger.warning(
-                        "Reconciliation: %s TP detected symbol=%s order_id=%s "
-                        "— position check will replace if position still open",
+                        "Reconciliation: %s TP detected symbol=%s order_id=%s — will re-check next cycle",
                         o["orderStatus"], o["symbol"], o.get("orderId"),
                     )
 
