@@ -113,15 +113,13 @@ class OrderTracker:
             return
 
         action = "buy" if side == "Sell" else "sell"
+        logger.info(
+            "Auto-TP created: symbol=%s side=%s qty=%s tp_order_id=%s action=%s",
+            symbol, side, qty, tp_order_id, action,
+        )
         linked = link_auto_tp_sync(symbol, action, qty, tp_order_id)
-        if linked:
-            logger.info(
-                "Auto-TP linked: tp_order_id=%s symbol=%s qty=%s",
-                tp_order_id, symbol, qty,
-            )
-        else:
-            logger.debug(
-                "Auto-TP not matched to any DB signal: tp_order_id=%s symbol=%s qty=%s",
-                tp_order_id, symbol, qty,
-            )
+        logger.info(
+            "Auto-TP link result: linked=%s symbol=%s action=%s qty=%s",
+            linked, symbol, action, qty,
+        )
 
