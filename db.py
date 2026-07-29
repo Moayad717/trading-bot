@@ -353,6 +353,22 @@ async def get_active_signals_needing_tp(symbol: str, action: str) -> List[dict]:
         return [_row_to_dict(r) for r in rows]
 
 
+async def get_active_signals_no_tp() -> List[dict]:
+    """Return active filled signals that have no tp_order_id (TP never placed or failed)."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT id, symbol, action, quantity, entry_fill_time
+              FROM signals
+             WHERE status = 'active'
+               AND tp_order_id IS NULL
+               AND entry_fill_time IS NOT NULL
+            """
+        )
+        rows = await cursor.fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+
 async def get_active_signals_with_tp() -> List[dict]:
     """Return active signals that have a tp_order_id set."""
     async with get_db() as db:

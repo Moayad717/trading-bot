@@ -42,13 +42,6 @@ class BybitExchange(BaseExchange):
         if signal.stop_loss is not None:
             params["stopLoss"] = str(signal.stop_loss)
 
-        if signal.take_profit is not None:
-            params["takeProfit"]   = str(signal.take_profit)
-            params["tpLimitPrice"] = str(signal.take_profit)
-            params["tpOrderType"]  = "Limit"
-            params["tpslMode"]     = "Partial"
-            params["tpSize"]       = str(signal.quantity)
-
         response: Any = self._client.place_order(**params)
         self._raise_for_error(response)
 
@@ -89,11 +82,12 @@ class BybitExchange(BaseExchange):
         }
 
     def get_execution_history(
-        self, symbol: str, category: str = "linear", limit: int = 200
+        self, symbol: str = "", category: str = "linear", limit: int = 200
     ) -> List[Dict[str, Any]]:
-        """Return position-closing executions (closedSize > 0) for a symbol, newest first.
+        """Return position-closing executions (closedSize > 0), newest first.
         Paginates automatically — Bybit caps each page at 100.
-        Each returned dict has: orderId, execTime (ms str), closedSize, side.
+        Pass symbol to filter by one contract; omit to get all symbols.
+        Each returned dict has: orderId, execTime (ms str), closedSize, side, symbol.
         """
         results: List[Dict[str, Any]] = []
         cursor: str = ""
@@ -101,9 +95,10 @@ class BybitExchange(BaseExchange):
         while remaining > 0:
             params: Dict[str, Any] = {
                 "category": category,
-                "symbol":   symbol,
                 "limit":    min(remaining, 100),
             }
+            if symbol:
+                params["symbol"] = symbol
             if cursor:
                 params["cursor"] = cursor
             response: Any = self._client.get_executions(**params)
@@ -116,6 +111,7 @@ class BybitExchange(BaseExchange):
                         "execTime":   ex["execTime"],
                         "closedSize": ex["closedSize"],
                         "side":       ex["side"],
+                        "symbol":     ex.get("symbol", ""),
                     })
             cursor     = page_result.get("nextPageCursor", "")
             remaining -= min(remaining, 100)

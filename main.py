@@ -15,6 +15,7 @@ from dashboard.routes import router as dashboard_router
 from db import (
     complete_signal_async,
     get_active_signals_needing_tp,
+    get_active_signals_no_tp,
     get_active_signals_with_tp,
     init_db_sync,
     set_tp_order_id_sync,
@@ -31,7 +32,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-tracker = OrderTracker()
+tracker = OrderTracker(exchange=BybitExchange())
 
 
 async def _reconcile_positions() -> None:
@@ -184,13 +185,14 @@ async def _reconcile_positions() -> None:
 async def reconcile_db_with_executions() -> int:
     """Match active DB signals against Bybit execution history and mark completed ones.
 
-    Uses actual Bybit trade records (tp_order_id matched against closedSize > 0
-    executions), so it is exact — no size comparisons or FIFO guessing.
-    Returns the number of signals fixed.
+    Pass 1 — exact match: tp_order_id → closedSize execution orderId.
+    Pass 2 — fuzzy match: signals with NULL tp_order_id matched by
+              symbol + action + qty + execTime > entry_fill_time.
+    Returns the total number of signals fixed.
     """
     exchange = BybitExchange()
     try:
-        executions = exchange.get_execution_history("LINKUSDT", category="linear", limit=200)
+        executions = exchange.get_execution_history(category="linear", limit=200)
     except Exception as exc:
         logger.error("Execution reconciliation: failed to fetch executions: %s", exc)
         return 0
@@ -198,25 +200,64 @@ async def reconcile_db_with_executions() -> int:
     if not executions:
         return 0
 
-    # Build orderId → ISO completion time from execution timestamps (milliseconds)
-    closed_map: dict[str, str] = {
-        ex["orderId"]: datetime.fromtimestamp(
-            int(ex["execTime"]) / 1000, tz=timezone.utc
-        ).replace(tzinfo=None).isoformat()
-        for ex in executions
-    }
+    def _exec_iso(ex: dict) -> str:
+        return (
+            datetime.fromtimestamp(int(ex["execTime"]) / 1000, tz=timezone.utc)
+            .replace(tzinfo=None)
+            .isoformat()
+        )
 
-    signals = await get_active_signals_with_tp()
     fixed = 0
-    for sig in signals:
+    used_order_ids: set[str] = set()
+
+    # Pass 1 — exact tp_order_id match
+    closed_map: dict[str, dict] = {ex["orderId"]: ex for ex in executions}
+    for sig in await get_active_signals_with_tp():
         tp_oid = sig["tp_order_id"]
         if tp_oid in closed_map:
-            await complete_signal_async(sig["id"], closed_map[tp_oid])
+            ex = closed_map[tp_oid]
+            await complete_signal_async(sig["id"], _exec_iso(ex))
+            used_order_ids.add(tp_oid)
             logger.info(
-                "Execution reconciliation: fixed signal_id=%s tp_order_id=%s completed_at=%s",
-                sig["id"], tp_oid, closed_map[tp_oid],
+                "Execution reconciliation: fixed signal_id=%s tp_order_id=%s",
+                sig["id"], tp_oid,
             )
             fixed += 1
+
+    # Pass 2 — fuzzy match for signals with no tp_order_id
+    for sig in await get_active_signals_no_tp():
+        close_side = "Sell" if sig["action"] == "buy" else "Buy"
+        sig_qty    = float(sig["quantity"])
+
+        entry_time_ms = 0
+        if sig.get("entry_fill_time"):
+            try:
+                entry_time_ms = int(
+                    datetime.fromisoformat(sig["entry_fill_time"]).timestamp() * 1000
+                )
+            except (ValueError, OSError):
+                pass
+
+        candidates = [
+            ex for ex in executions
+            if ex.get("symbol") == sig["symbol"]
+            and ex["side"] == close_side
+            and abs(float(ex["closedSize"]) - sig_qty) < 0.001
+            and int(ex["execTime"]) > entry_time_ms
+            and ex["orderId"] not in used_order_ids
+        ]
+
+        if not candidates:
+            continue
+
+        best = min(candidates, key=lambda x: int(x["execTime"]))
+        await complete_signal_async(sig["id"], _exec_iso(best))
+        used_order_ids.add(best["orderId"])
+        logger.info(
+            "Execution reconciliation (qty match): fixed signal_id=%s symbol=%s qty=%s",
+            sig["id"], sig["symbol"], sig_qty,
+        )
+        fixed += 1
 
     if fixed:
         logger.info("Execution reconciliation: %d signal(s) marked completed", fixed)
