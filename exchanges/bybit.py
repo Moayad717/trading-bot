@@ -173,6 +173,15 @@ class BybitExchange(BaseExchange):
         self._raise_for_error(response)
         return response.get("result", {}).get("list", [])
 
+    def get_equity(self) -> float:
+        """Return totalEquity of the UNIFIED account in USDT."""
+        response: Any = self._client.get_wallet_balance(accountType="UNIFIED")
+        self._raise_for_error(response)
+        accounts = response.get("result", {}).get("list", [])
+        if accounts:
+            return float(accounts[0].get("totalEquity", 0) or 0)
+        return 0.0
+
     def cancel_order(self, order_id: str, symbol: str) -> Dict[str, Any]:
         response: Any = self._client.cancel_order(
             category="linear",

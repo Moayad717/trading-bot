@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import csv as _csv
 import logging
+import os as _os
 import time
+from datetime import datetime as _dt, timezone as _tz
 from typing import Any, Dict
 
 from fastapi import APIRouter, HTTPException, Request, status
@@ -30,8 +33,118 @@ def _get_exchange():
     return cls()
 
 
+# ── Deduplication ────────────────────────────────────────────────────────────
 _recent_signals: dict[str, float] = {}
 _DEDUP_WINDOW = 60.0  # seconds
+
+# ── Net-delta cap ─────────────────────────────────────────────────────────────
+_DELTA_LOG = "net_delta.log"
+_DELTA_HEADER = [
+    "utc", "action", "interval", "qty",
+    "committed_net", "new_net", "cap_coin", "equity",
+    "mark_price", "net_leverage", "decision",
+]
+
+_delta_snapshot: dict = {}
+_delta_snapshot_ts: float = 0.0
+
+
+def _write_delta_log(*fields: Any) -> None:
+    write_header = not _os.path.exists(_DELTA_LOG) or _os.path.getsize(_DELTA_LOG) == 0
+    try:
+        with open(_DELTA_LOG, "a", newline="") as f:
+            w = _csv.writer(f)
+            if write_header:
+                w.writerow(_DELTA_HEADER)
+            w.writerow(fields)
+    except Exception as exc:
+        logger.warning("Net delta log write failed: %s", exc)
+
+
+def _check_net_delta(signal_create: Any, exchange: Any) -> str:
+    """Evaluate net-delta imbalance for this incoming order.
+
+    Returns one of: ALLOW | REFUSE | SHADOW_WOULD_REFUSE | ERROR_FAILOPEN.
+    Only REFUSE causes the order to be rejected; all others allow it through.
+    Fail-open on any API or computation error.
+    """
+    global _delta_snapshot, _delta_snapshot_ts
+
+    try:
+        now = time.time()
+        if now - _delta_snapshot_ts >= settings.NET_DELTA_CACHE_SEC:
+            _delta_snapshot = {
+                "positions":   exchange.get_positions(category="linear", settle_coin="USDT"),
+                "open_orders": exchange.get_all_open_orders(category="linear", settle_coin="USDT"),
+                "equity":      exchange.get_equity(),
+            }
+            _delta_snapshot_ts = now
+
+        positions   = _delta_snapshot["positions"]
+        open_orders = _delta_snapshot["open_orders"]
+        equity      = float(_delta_snapshot["equity"])
+        mark_price  = float(signal_create.trigger_price or 0)
+
+        if equity <= 0 or mark_price <= 0:
+            logger.warning(
+                "Net delta cap: invalid equity=%s or mark_price=%s — fail open",
+                equity, mark_price,
+            )
+            return "ERROR_FAILOPEN"
+
+        # Signed delta from filled positions
+        pos_net = sum(
+            float(p.get("size", 0)) * (1 if p.get("side") == "Buy" else -1)
+            for p in positions
+            if float(p.get("size", 0)) > 0
+        )
+
+        # Signed delta from non-reduceOnly pending orders
+        ord_net = sum(
+            float(o.get("qty", 0)) * (1 if o.get("side") == "Buy" else -1)
+            for o in open_orders
+            if not o.get("reduceOnly")
+        )
+
+        committed_net = pos_net + ord_net
+        signed_qty    = signal_create.quantity if signal_create.action == Action.BUY else -signal_create.quantity
+        new_net       = committed_net + signed_qty
+        cap_coin      = settings.NET_DELTA_CAP_PCT * equity / mark_price
+        net_leverage  = abs(new_net) * mark_price / equity
+
+        # Block only when new order makes imbalance worse AND exceeds cap
+        would_refuse = abs(new_net) > cap_coin and abs(new_net) > abs(committed_net)
+
+        if would_refuse and settings.NET_DELTA_CAP_SHADOW:
+            decision = "SHADOW_WOULD_REFUSE"
+        elif would_refuse:
+            decision = "REFUSE"
+        else:
+            decision = "ALLOW"
+
+        _write_delta_log(
+            _dt.now(_tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            signal_create.action.value,
+            signal_create.interval or "",
+            signal_create.quantity,
+            round(committed_net, 4),
+            round(new_net, 4),
+            round(cap_coin, 4),
+            round(equity, 2),
+            mark_price,
+            round(net_leverage, 4),
+            decision,
+        )
+        logger.info(
+            "Net delta: committed=%.3f new_net=%.3f cap=%.3f equity=%.2f"
+            " net_leverage=%.4f decision=%s",
+            committed_net, new_net, cap_coin, equity, net_leverage, decision,
+        )
+        return decision
+
+    except Exception as exc:
+        logger.warning("Net delta cap check failed — fail open: %s", exc)
+        return "ERROR_FAILOPEN"
 
 
 def _is_duplicate(key: str) -> bool:
@@ -104,6 +217,15 @@ async def tradingview_webhook(request: Request) -> Dict[str, Any]:
             "order_id": None,
             "exchange": "paper",
         }
+
+    # Net-delta cap — runs only for live orders (paper trading already returned above).
+    if settings.NET_DELTA_CAP_ENABLED:
+        if _check_net_delta(signal_create, exchange) == "REFUSE":
+            logger.info(
+                "Net delta cap: order refused symbol=%s action=%s qty=%s",
+                signal_create.symbol, signal_create.action.value, signal_create.quantity,
+            )
+            return {"status": "rejected", "reason": "net delta cap exceeded"}
 
     # Place the order on Bybit first so we know the order_id before writing to DB.
     try:

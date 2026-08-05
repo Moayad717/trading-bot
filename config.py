@@ -26,6 +26,12 @@ class Settings(BaseSettings):
 
     TIMEZONE: str = "Asia/Beirut"
 
+    # Net-delta cap — prevents the bot from building an outsized directional imbalance.
+    NET_DELTA_CAP_ENABLED: bool  = False   # master switch (.env overrides to True)
+    NET_DELTA_CAP_PCT:     float = 1.00    # max |net_delta| as multiple of equity in coin
+    NET_DELTA_CAP_SHADOW:  bool  = True    # True = log only, never refuse
+    NET_DELTA_CACHE_SEC:   int   = 5       # seconds to cache position/order/equity snapshot
+
     @property
     def active_exchange(self) -> str:
         return "bybit"
