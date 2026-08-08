@@ -147,6 +147,85 @@ def _check_net_delta(signal_create: Any, exchange: Any) -> str:
         return "ERROR_FAILOPEN"
 
 
+def _cancel_resting_if_over_cap(signal_create: Any, exchange: Any, placed_order_id: str) -> None:
+    """After placing an entry order, fetch a fresh snapshot and cancel same-side
+    resting non-reduceOnly orders if net delta still exceeds the cap.
+
+    In shadow mode logs the would-be cancellations without acting.
+    Fail-open: any error is logged as a warning and the function returns quietly.
+    """
+    global _delta_snapshot_ts
+    _delta_snapshot_ts = 0  # force fresh fetch on next _check_net_delta call
+
+    try:
+        positions   = exchange.get_positions(category="linear", settle_coin="USDT")
+        open_orders = exchange.get_all_open_orders(category="linear", settle_coin="USDT")
+        equity      = float(exchange.get_equity())
+        mark_price  = float(signal_create.trigger_price or 0)
+
+        if equity <= 0 or mark_price <= 0:
+            logger.warning(
+                "NET_DELTA post-place: invalid equity=%s mark_price=%s — skipping cancel check",
+                equity, mark_price,
+            )
+            return
+
+        pos_net = sum(
+            float(p.get("size", 0)) * (1 if p.get("side") == "Buy" else -1)
+            for p in positions
+            if float(p.get("size", 0)) > 0
+        )
+        ord_net = sum(
+            float(o.get("qty", 0)) * (1 if o.get("side") == "Buy" else -1)
+            for o in open_orders
+            if not o.get("reduceOnly")
+        )
+        committed_net = pos_net + ord_net
+        cap_coin      = settings.NET_DELTA_CAP_PCT * equity / mark_price
+
+        if abs(committed_net) <= cap_coin:
+            return  # within cap — nothing to do
+
+        side = "Buy" if signal_create.action == Action.BUY else "Sell"
+        to_cancel = [
+            o for o in open_orders
+            if not o.get("reduceOnly")
+            and o.get("side") == side
+            and o.get("orderId") != placed_order_id
+        ]
+
+        if not to_cancel:
+            return
+
+        if settings.NET_DELTA_CAP_SHADOW:
+            logger.info(
+                "NET_DELTA (shadow): WOULD cancel %d resting %s orders, "
+                "net_delta=%.3f exceeded cap=%.3f after fill",
+                len(to_cancel), side, committed_net, cap_coin,
+            )
+            return
+
+        cancelled = 0
+        for o in to_cancel:
+            try:
+                exchange.cancel_order(o["orderId"], o["symbol"])
+                cancelled += 1
+            except Exception as exc:
+                logger.warning(
+                    "NET_DELTA: failed to cancel order_id=%s symbol=%s: %s",
+                    o.get("orderId"), o.get("symbol"), exc,
+                )
+
+        logger.info(
+            "NET_DELTA: cancelled %d resting %s orders, "
+            "net_delta=%.3f exceeded cap=%.3f after fill",
+            cancelled, side, committed_net, cap_coin,
+        )
+
+    except Exception as exc:
+        logger.warning("NET_DELTA post-place cancel check failed — fail open: %s", exc)
+
+
 def _is_duplicate(key: str) -> bool:
     """Return True if key fired within the dedup window; register it and return False otherwise.
     Evicts expired entries on every call to keep the dict bounded.
@@ -239,6 +318,10 @@ async def tradingview_webhook(request: Request) -> Dict[str, Any]:
         )
 
     order_id = result.get("order_id", "")
+
+    # Post-placement delta check: cancel same-side resting orders if cap now breached.
+    if settings.NET_DELTA_CAP_ENABLED:
+        _cancel_resting_if_over_cap(signal_create, exchange, order_id)
 
     # Persist the signal to DB — retry up to 3 times so a transient write-queue
     # stall does not leave a live Bybit order with no dashboard record.
