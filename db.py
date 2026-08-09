@@ -409,6 +409,114 @@ async def get_all_signals() -> List[dict]:
         return [_row_to_dict(r) for r in rows]
 
 
+async def get_signal_counts() -> dict:
+    """Return per-status counts for all-time and today via COUNT queries — no full scan."""
+    today = today_local()
+    statuses = ("open", "active", "completed", "failed")
+    async with get_db() as db:
+        total_row = await (await db.execute("SELECT COUNT(*) FROM signals")).fetchone()
+        today_total_row = await (await db.execute(
+            "SELECT COUNT(*) FROM signals WHERE date(timestamp) = ?", (today,)
+        )).fetchone()
+
+        all_time: dict[str, int] = {}
+        today_counts: dict[str, int] = {}
+        for st in statuses:
+            r = await (await db.execute(
+                "SELECT COUNT(*) FROM signals WHERE status = ?", (st,)
+            )).fetchone()
+            all_time[st] = r[0] if r else 0
+            r2 = await (await db.execute(
+                "SELECT COUNT(*) FROM signals WHERE status = ? AND date(timestamp) = ?",
+                (st, today),
+            )).fetchone()
+            today_counts[st] = r2[0] if r2 else 0
+
+    return {
+        "total":              total_row[0] if total_row else 0,
+        "open":               all_time["open"],
+        "active":             all_time["active"],
+        "completed":          all_time["completed"],
+        "failed":             all_time["failed"],
+        "today_total":        today_total_row[0] if today_total_row else 0,
+        "today_open":         today_counts["open"],
+        "today_active":       today_counts["active"],
+        "today_completed":    today_counts["completed"],
+        "today_failed":       today_counts["failed"],
+    }
+
+
+_SORT_COLS = {"timestamp", "symbol", "action", "price", "take_profit", "status", "quantity"}
+
+
+async def get_signals_paginated(
+    *,
+    page: int = 1,
+    limit: int = 25,
+    status: str = "all",
+    symbol: str = "",
+    from_date: str = "",
+    to_date: str = "",
+    direction: str = "all",
+    interval: str = "all",
+    sort: str = "timestamp",
+    sort_dir: str = "desc",
+    fetch_all: bool = False,
+) -> dict:
+    """Return a page of signals with SQL-level filtering and pagination.
+
+    Rule and session filters are derived fields; pass fetch_all=True from the
+    route handler to get the full filtered set for Python post-filtering.
+    """
+    sort_col = sort if sort in _SORT_COLS else "timestamp"
+    order = "ASC" if sort_dir.lower() == "asc" else "DESC"
+
+    conditions: list[str] = []
+    params: list[Any] = []
+
+    if status != "all":
+        conditions.append("status = ?")
+        params.append(status)
+    if symbol:
+        conditions.append("UPPER(symbol) LIKE ?")
+        params.append(f"%{symbol.upper()}%")
+    if from_date:
+        conditions.append("date(timestamp) >= ?")
+        params.append(from_date)
+    if to_date:
+        conditions.append("date(timestamp) <= ?")
+        params.append(to_date)
+    if direction != "all":
+        conditions.append("action = ?")
+        params.append(direction)
+    if interval != "all":
+        conditions.append("interval = ?")
+        params.append(interval)
+
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
+    async with get_db() as db:
+        count_row = await (await db.execute(
+            f"SELECT COUNT(*) FROM signals {where}", params
+        )).fetchone()
+        total = count_row[0] if count_row else 0
+
+        if fetch_all:
+            cursor = await db.execute(
+                f"SELECT * FROM signals {where} ORDER BY {sort_col} {order}",
+                params,
+            )
+        else:
+            offset = (page - 1) * limit
+            cursor = await db.execute(
+                f"SELECT * FROM signals {where} ORDER BY {sort_col} {order} LIMIT ? OFFSET ?",
+                params + [limit, offset],
+            )
+        rows = await cursor.fetchall()
+
+    return {"total": total, "signals": [_row_to_dict(r) for r in rows]}
+
+
 async def get_signals_today() -> List[dict]:
     today = today_local()
     async with get_db() as db:

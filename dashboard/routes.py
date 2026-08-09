@@ -2,20 +2,23 @@ from __future__ import annotations
 
 import os
 from collections import defaultdict
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
+from math import ceil
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from db import (
     get_all_signals,
     get_all_signals_for_summary,
     get_daily_report,
     get_performance_stats,
+    get_signal_counts,
     get_signals_before_today,
     get_signals_by_date,
     get_signals_for_stats,
+    get_signals_paginated,
     get_signals_today,
 )
 from utils.session import SESSIONS, classify_sessions
@@ -45,10 +48,102 @@ async def performance_stats() -> Dict[str, Any]:
     return await get_performance_stats()
 
 
-@router.get("/signals", summary="All signals (most recent first)")
-async def all_signals() -> Dict[str, Any]:
-    signals = await get_all_signals()
-    return {"total": len(signals), "signals": signals}
+@router.get("/signals/counts", summary="Per-status signal counts (all-time and today)")
+async def signal_counts() -> Dict[str, Any]:
+    return await get_signal_counts()
+
+
+@router.get("/signals/export", summary="Export all filtered signals as CSV")
+async def export_signals(
+    status:    str = Query(default="all"),
+    symbol:    str = Query(default=""),
+    from_date: str = Query(default="", alias="from"),
+    to_date:   str = Query(default="", alias="to"),
+    direction: str = Query(default="all"),
+    rule:      str = Query(default="all"),
+    session:   str = Query(default="all"),
+    interval:  str = Query(default="all"),
+    sort:      str = Query(default="timestamp"),
+    sort_dir:  str = Query(default="desc"),
+) -> StreamingResponse:
+    result = await get_signals_paginated(
+        fetch_all=True,
+        status=status, symbol=symbol,
+        from_date=from_date, to_date=to_date,
+        direction=direction, interval=interval,
+        sort=sort, sort_dir=sort_dir,
+    )
+    signals = _apply_derived_filters(result["signals"], rule=rule, session=session)
+
+    import csv, io
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "Date", "Symbol", "Action", "Pattern", "Interval", "Rule", "Session",
+        "Entry", "TP", "Status", "Fill Time", "Completion", "Order ID",
+    ])
+    for s in signals:
+        ts   = s.get("timestamp", "")
+        rule_val = _extract_rule(s.get("pattern_type"))
+        try:
+            ts_dt    = datetime.fromisoformat(str(ts).replace(" ", "T"))
+            sessions = ", ".join(classify_sessions(ts_dt))
+        except Exception:
+            sessions = ""
+        writer.writerow([
+            ts, s.get("symbol", ""), s.get("action", ""),
+            s.get("pattern_type", ""), s.get("interval", ""), rule_val, sessions,
+            s.get("price") or s.get("trigger_price", ""), s.get("take_profit", ""),
+            s.get("status", ""), s.get("entry_fill_time", ""),
+            s.get("completion_time", ""), s.get("order_id", ""),
+        ])
+
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=signals.csv"},
+    )
+
+
+@router.get("/signals", summary="Paginated signals with server-side filtering")
+async def all_signals(
+    page:      int = Query(default=1,    ge=1),
+    limit:     int = Query(default=25,   ge=1, le=200),
+    status:    str = Query(default="all"),
+    symbol:    str = Query(default=""),
+    from_date: str = Query(default="", alias="from"),
+    to_date:   str = Query(default="", alias="to"),
+    direction: str = Query(default="all"),
+    rule:      str = Query(default="all"),
+    session:   str = Query(default="all"),
+    interval:  str = Query(default="all"),
+    sort:      str = Query(default="timestamp"),
+    sort_dir:  str = Query(default="desc"),
+) -> Dict[str, Any]:
+    need_python_filter = rule != "all" or session != "all"
+
+    result = await get_signals_paginated(
+        page=page if not need_python_filter else 1,
+        limit=limit if not need_python_filter else 10_000,
+        fetch_all=need_python_filter,
+        status=status, symbol=symbol,
+        from_date=from_date, to_date=to_date,
+        direction=direction, interval=interval,
+        sort=sort, sort_dir=sort_dir,
+    )
+
+    signals = result["signals"]
+    if need_python_filter:
+        signals = _apply_derived_filters(signals, rule=rule, session=session)
+        total   = len(signals)
+        start   = (page - 1) * limit
+        signals = signals[start : start + limit]
+    else:
+        total = result["total"]
+
+    pages = max(1, ceil(total / limit))
+    return {"total": total, "page": page, "pages": pages, "signals": signals}
 
 
 @router.get("/signals/today", summary="Signals received today")
@@ -83,6 +178,31 @@ async def signals_for_date(
 ) -> Dict[str, Any]:
     signals = await get_signals_by_date(date)
     return {"date": date, "total": len(signals), "signals": signals}
+
+
+# ── Shared helpers ────────────────────────────────────────────────────────────
+
+def _apply_derived_filters(
+    signals: List[dict],
+    rule: str = "all",
+    session: str = "all",
+) -> List[dict]:
+    """Post-filter signals by rule (derived from pattern_type) and/or session."""
+    if rule == "all" and session == "all":
+        return signals
+    out = []
+    for s in signals:
+        if rule != "all" and _extract_rule(s.get("pattern_type")) != rule:
+            continue
+        if session != "all":
+            try:
+                ts_dt = datetime.fromisoformat(str(s.get("timestamp", "")).replace(" ", "T"))
+                if session not in classify_sessions(ts_dt):
+                    continue
+            except Exception:
+                continue
+        out.append(s)
+    return out
 
 
 # ── Stats helpers ─────────────────────────────────────────────────────────────
