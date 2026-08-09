@@ -248,6 +248,102 @@ def _verify_secret(request: Request) -> None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid webhook secret")
 
 
+async def _place_order_background(signal_create: Any, exchange: Any) -> None:
+    """Runs after the 200 OK is returned to TradingView.
+    Handles net-delta check, order placement, DB insert, and TP placement.
+    All errors are logged — never raised (no HTTP context available).
+    """
+    try:
+        if settings.NET_DELTA_CAP_ENABLED:
+            if _check_net_delta(signal_create, exchange) == "REFUSE":
+                logger.info(
+                    "Net delta cap: background order refused symbol=%s action=%s qty=%s",
+                    signal_create.symbol, signal_create.action.value, signal_create.quantity,
+                )
+                return
+
+        try:
+            result = exchange.place_order(signal_create)
+        except Exception as exc:
+            logger.error(
+                "Background order failed: symbol=%s error=%s",
+                signal_create.symbol, exc,
+            )
+            return
+
+        order_id = result.get("order_id", "")
+
+        if settings.NET_DELTA_CAP_ENABLED:
+            _cancel_resting_if_over_cap(signal_create, exchange, order_id)
+
+        signal = Signal(
+            **signal_create.model_dump(),
+            timestamp=now_local(),
+            exchange=exchange.name,
+            status=SignalStatus.PENDING,
+        )
+        signal_id: int = 0
+        for attempt in range(3):
+            try:
+                signal_id = await insert_signal(signal)
+                break
+            except Exception as exc:
+                if attempt == 2:
+                    logger.critical(
+                        "CRITICAL: order placed on Bybit but DB insert failed after 3 attempts — "
+                        "manual reconciliation required! symbol=%s order_id=%s error=%s",
+                        signal_create.symbol, order_id, exc,
+                    )
+                    return
+                logger.warning(
+                    "DB insert attempt %d/3 failed (symbol=%s): %s — retrying",
+                    attempt + 1, signal_create.symbol, exc,
+                )
+                await asyncio.sleep(0.3 * (attempt + 1))
+
+        if signal_create.order_type == OrderType.MARKET:
+            fill_time = now_local().isoformat()
+            await mark_market_order_filled(signal_id, order_id, fill_time)
+            placed_status = SignalStatus.ACTIVE
+
+            if signal_create.take_profit and order_id:
+                tp_side      = "Sell" if signal_create.action == Action.BUY else "Buy"
+                position_idx = 1 if signal_create.action == Action.BUY else 2
+                try:
+                    tp_result = exchange.place_tp_order(
+                        symbol=signal_create.symbol,
+                        side=tp_side,
+                        qty=signal_create.quantity,
+                        price=signal_create.take_profit,
+                        position_idx=position_idx,
+                        category=signal_create.category,
+                    )
+                    tp_oid = tp_result.get("order_id", "")
+                    if tp_oid:
+                        set_tp_order_id_sync(order_id, tp_oid)
+                    logger.info(
+                        "Market TP placed: entry_id=%s tp_id=%s symbol=%s",
+                        order_id, tp_oid, signal_create.symbol,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "Market TP failed (watchdog will recover): entry_id=%s symbol=%s error=%s",
+                        order_id, signal_create.symbol, exc,
+                    )
+        else:
+            await update_signal_status(signal_id, status=SignalStatus.OPEN, order_id=order_id)
+            placed_status = SignalStatus.OPEN
+
+        logger.info(
+            "Order placed: id=%s symbol=%s action=%s status=%s order_id=%s",
+            signal_id, signal_create.symbol, signal_create.action.value,
+            placed_status.value, order_id,
+        )
+
+    except Exception as exc:
+        logger.error("Unexpected error in background order task: %s", exc)
+
+
 @router.post("/tradingview", status_code=status.HTTP_200_OK)
 async def tradingview_webhook(request: Request) -> Dict[str, Any]:
     _verify_secret(request)
@@ -297,104 +393,5 @@ async def tradingview_webhook(request: Request) -> Dict[str, Any]:
             "exchange": "paper",
         }
 
-    # Net-delta cap — runs only for live orders (paper trading already returned above).
-    if settings.NET_DELTA_CAP_ENABLED:
-        if _check_net_delta(signal_create, exchange) == "REFUSE":
-            logger.info(
-                "Net delta cap: order refused symbol=%s action=%s qty=%s",
-                signal_create.symbol, signal_create.action.value, signal_create.quantity,
-            )
-            return {"status": "rejected", "reason": "net delta cap exceeded"}
-
-    # Place the order on Bybit first so we know the order_id before writing to DB.
-    try:
-        result = exchange.place_order(signal_create)
-    except Exception as exc:
-        error_msg = str(exc)
-        logger.error("Order failed: symbol=%s error=%s", signal_create.symbol, error_msg)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail={"error": error_msg},
-        )
-
-    order_id = result.get("order_id", "")
-
-    # Post-placement delta check: cancel same-side resting orders if cap now breached.
-    if settings.NET_DELTA_CAP_ENABLED:
-        _cancel_resting_if_over_cap(signal_create, exchange, order_id)
-
-    # Persist the signal to DB — retry up to 3 times so a transient write-queue
-    # stall does not leave a live Bybit order with no dashboard record.
-    signal = Signal(
-        **signal_create.model_dump(),
-        timestamp=now_local(),
-        exchange=exchange.name,
-        status=SignalStatus.PENDING,
-    )
-    signal_id: int = 0
-    for attempt in range(3):
-        try:
-            signal_id = await insert_signal(signal)
-            break
-        except Exception as exc:
-            if attempt == 2:
-                logger.critical(
-                    "CRITICAL: order placed on Bybit but DB insert failed after 3 attempts — "
-                    "manual reconciliation required! symbol=%s order_id=%s error=%s",
-                    signal_create.symbol, order_id, exc,
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail={"error": "order placed but DB record failed", "order_id": order_id},
-                )
-            logger.warning(
-                "DB insert attempt %d/3 failed (symbol=%s): %s — retrying",
-                attempt + 1, signal_create.symbol, exc,
-            )
-            await asyncio.sleep(0.3 * (attempt + 1))
-
-    if signal_create.order_type == OrderType.MARKET:
-        # Market orders fill instantly — mark active then place TP inline.
-        # WebSocket fill event fires before the DB record exists, so TP must be
-        # placed here rather than in order_tracker.
-        fill_time = now_local().isoformat()
-        await mark_market_order_filled(signal_id, order_id, fill_time)
-        placed_status = SignalStatus.ACTIVE
-
-        if signal_create.take_profit and order_id:
-            tp_side      = "Sell" if signal_create.action == Action.BUY else "Buy"
-            position_idx = 1 if signal_create.action == Action.BUY else 2
-            try:
-                tp_result = exchange.place_tp_order(
-                    symbol=signal_create.symbol,
-                    side=tp_side,
-                    qty=signal_create.quantity,
-                    price=signal_create.take_profit,
-                    position_idx=position_idx,
-                    category=signal_create.category,
-                )
-                tp_oid = tp_result.get("order_id", "")
-                if tp_oid:
-                    set_tp_order_id_sync(order_id, tp_oid)
-                logger.info(
-                    "Market TP placed: entry_id=%s tp_id=%s symbol=%s",
-                    order_id, tp_oid, signal_create.symbol,
-                )
-            except Exception as exc:
-                logger.error(
-                    "Market TP failed (watchdog will recover): entry_id=%s symbol=%s error=%s",
-                    order_id, signal_create.symbol, exc,
-                )
-    else:
-        # Limit order: sits on the book; WebSocket handles fill → ACTIVE → TP → COMPLETED.
-        await update_signal_status(signal_id, status=SignalStatus.OPEN, order_id=order_id)
-        placed_status = SignalStatus.OPEN
-
-    logger.info("Order placed: id=%s symbol=%s action=%s status=%s order_id=%s",
-                signal_id, signal.symbol, signal.action, placed_status.value, order_id)
-    return {
-        "signal_id": signal_id,
-        "status": placed_status.value,
-        "order_id": order_id,
-        "exchange": exchange.name,
-    }
+    asyncio.create_task(_place_order_background(signal_create, exchange))
+    return {"status": "received"}
