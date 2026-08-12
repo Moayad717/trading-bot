@@ -11,7 +11,12 @@ from typing import Any, Dict
 from fastapi import APIRouter, HTTPException, Request, status
 
 from config import now_local, settings
-from db import insert_signal, mark_market_order_filled, set_tp_order_id_sync, update_signal_status
+from db import (
+    insert_signal_sync,
+    mark_market_order_filled_sync,
+    set_tp_order_id_sync,
+    update_signal_status_sync,
+)
 from exchanges.bybit import BybitExchange
 from models.signal import Action, OrderType, Signal, SignalStatus
 from sources import tradingview as tv_parser
@@ -248,16 +253,18 @@ def _verify_secret(request: Request) -> None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid webhook secret")
 
 
-async def _place_order_background(signal_create: Any, exchange: Any) -> None:
-    """Runs after the 200 OK is returned to TradingView.
-    Handles net-delta check, order placement, DB insert, and TP placement.
+def _place_order_sync(signal_create: Any, exchange: Any) -> None:
+    """Runs in a thread-pool executor after the 200 OK is returned to TradingView.
+
+    All Bybit API calls are synchronous (pybit HTTP) so running this in a thread
+    keeps the event loop free to handle the next incoming webhook immediately.
     All errors are logged — never raised (no HTTP context available).
     """
     try:
         if settings.NET_DELTA_CAP_ENABLED:
             if _check_net_delta(signal_create, exchange) == "REFUSE":
                 logger.info(
-                    "Net delta cap: background order refused symbol=%s action=%s qty=%s",
+                    "Net delta cap: order refused symbol=%s action=%s qty=%s",
                     signal_create.symbol, signal_create.action.value, signal_create.quantity,
                 )
                 return
@@ -266,7 +273,7 @@ async def _place_order_background(signal_create: Any, exchange: Any) -> None:
             result = exchange.place_order(signal_create)
         except Exception as exc:
             logger.error(
-                "Background order failed: symbol=%s error=%s",
+                "Order placement failed: symbol=%s error=%s",
                 signal_create.symbol, exc,
             )
             return
@@ -285,7 +292,7 @@ async def _place_order_background(signal_create: Any, exchange: Any) -> None:
         signal_id: int = 0
         for attempt in range(3):
             try:
-                signal_id = await insert_signal(signal)
+                signal_id = insert_signal_sync(signal)
                 break
             except Exception as exc:
                 if attempt == 2:
@@ -299,11 +306,11 @@ async def _place_order_background(signal_create: Any, exchange: Any) -> None:
                     "DB insert attempt %d/3 failed (symbol=%s): %s — retrying",
                     attempt + 1, signal_create.symbol, exc,
                 )
-                await asyncio.sleep(0.3 * (attempt + 1))
+                time.sleep(0.3 * (attempt + 1))
 
         if signal_create.order_type == OrderType.MARKET:
             fill_time = now_local().isoformat()
-            await mark_market_order_filled(signal_id, order_id, fill_time)
+            mark_market_order_filled_sync(signal_id, order_id, fill_time)
             placed_status = SignalStatus.ACTIVE
 
             if signal_create.take_profit and order_id:
@@ -331,7 +338,7 @@ async def _place_order_background(signal_create: Any, exchange: Any) -> None:
                         order_id, signal_create.symbol, exc,
                     )
         else:
-            await update_signal_status(signal_id, status=SignalStatus.OPEN, order_id=order_id)
+            update_signal_status_sync(signal_id, SignalStatus.OPEN, order_id)
             placed_status = SignalStatus.OPEN
 
         logger.info(
@@ -341,7 +348,7 @@ async def _place_order_background(signal_create: Any, exchange: Any) -> None:
         )
 
     except Exception as exc:
-        logger.error("Unexpected error in background order task: %s", exc)
+        logger.error("Unexpected error in thread-pool order task: %s", exc)
 
 
 @router.post("/tradingview", status_code=status.HTTP_200_OK)
@@ -393,5 +400,5 @@ async def tradingview_webhook(request: Request) -> Dict[str, Any]:
             "exchange": "paper",
         }
 
-    asyncio.create_task(_place_order_background(signal_create, exchange))
+    asyncio.get_event_loop().run_in_executor(None, _place_order_sync, signal_create, exchange)
     return {"status": "received"}

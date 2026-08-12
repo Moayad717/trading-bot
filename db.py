@@ -244,6 +244,71 @@ def update_order_status_sync(order_id: str, new_status: SignalStatus) -> bool:
         return cur.rowcount > 0
 
 
+def insert_signal_sync(signal: Signal) -> int:
+    """Insert a new signal row from a thread-pool context. Returns the new row id."""
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        cur = conn.execute(
+            """
+            INSERT INTO signals
+                (timestamp, action, symbol, quantity, price, order_type, category,
+                 status, exchange, order_id, source, error_message, stop_loss, take_profit,
+                 trigger_price, pattern_type, interval)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                signal.timestamp.isoformat(),
+                signal.action.value,
+                signal.symbol,
+                signal.quantity,
+                signal.price,
+                signal.order_type.value,
+                signal.category,
+                signal.status.value,
+                signal.exchange,
+                signal.order_id,
+                signal.source,
+                signal.error_message,
+                signal.stop_loss,
+                signal.take_profit,
+                signal.trigger_price,
+                signal.pattern_type,
+                signal.interval,
+            ),
+        )
+        conn.commit()
+        return cur.lastrowid or 0
+
+
+def mark_market_order_filled_sync(signal_id: int, order_id: str, fill_time: str) -> None:
+    """Set status=active, order_id, entry_fill_time by signal id. Thread-pool safe."""
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute(
+            "UPDATE signals SET status='active', order_id=?, entry_fill_time=? WHERE id=?",
+            (order_id, fill_time, signal_id),
+        )
+        conn.commit()
+
+
+def update_signal_status_sync(
+    signal_id: int,
+    status: SignalStatus,
+    order_id: Optional[str] = None,
+) -> None:
+    """Update status (and optionally order_id) by signal id. Thread-pool safe."""
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute(
+            "UPDATE signals SET status=?, order_id=? WHERE id=?",
+            (status.value, order_id, signal_id),
+        )
+        conn.commit()
+
+
 def get_tp_info_sync(order_id: str) -> Optional[dict]:
     """Return TP placement data for a filled entry order. Called from WebSocket thread."""
     with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
