@@ -40,6 +40,7 @@ _MIGRATIONS = [
     ("interval",                  "TEXT"),
     ("of_id",                     "TEXT"),
     ("close_original_order_id",   "TEXT"),
+    ("close_original_json",       "TEXT"),
 ]
 
 
@@ -102,8 +103,8 @@ async def _insert_signal_impl(signal: Signal) -> int:
             INSERT INTO signals
                 (timestamp, action, symbol, quantity, price, order_type, category,
                  status, exchange, order_id, source, error_message, stop_loss, take_profit,
-                 trigger_price, pattern_type, interval, of_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 trigger_price, pattern_type, interval, of_id, close_original_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 signal.timestamp.isoformat(),
@@ -124,6 +125,7 @@ async def _insert_signal_impl(signal: Signal) -> int:
                 signal.pattern_type,
                 signal.interval,
                 signal.of_id,
+                signal.close_original_json,
             ),
         )
         await db.commit()
@@ -257,8 +259,8 @@ def insert_signal_sync(signal: Signal) -> int:
             INSERT INTO signals
                 (timestamp, action, symbol, quantity, price, order_type, category,
                  status, exchange, order_id, source, error_message, stop_loss, take_profit,
-                 trigger_price, pattern_type, interval, of_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 trigger_price, pattern_type, interval, of_id, close_original_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 signal.timestamp.isoformat(),
@@ -279,6 +281,7 @@ def insert_signal_sync(signal: Signal) -> int:
                 signal.pattern_type,
                 signal.interval,
                 signal.of_id,
+                signal.close_original_json,
             ),
         )
         conn.commit()
@@ -331,7 +334,8 @@ def get_signal_by_order_id_sync(order_id: str) -> Optional[dict]:
     with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
         cur = conn.execute(
             """SELECT id, take_profit, symbol, action, category,
-                      pattern_type, of_id, quantity, close_original_order_id
+                      pattern_type, of_id, quantity, close_original_order_id,
+                      close_original_json
                FROM signals WHERE order_id = ?""",
             (order_id,),
         )
@@ -348,6 +352,7 @@ def get_signal_by_order_id_sync(order_id: str) -> Optional[dict]:
         "of_id":                   row[6],
         "quantity":                row[7],
         "close_original_order_id": row[8],
+        "close_original_json":     row[9],
     }
 
 
@@ -414,6 +419,19 @@ def mark_close_original_filled_sync(close_original_order_id: str, fill_time: str
                   SET status='completed', completion_time=?
                 WHERE close_original_order_id = ? AND status = 'active'""",
             (fill_time, close_original_order_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def complete_signal_by_id_sync(signal_id: int, completion_time: str) -> bool:
+    """Transition a signal ACTIVE → COMPLETED by primary key. Used when the
+    dynamic SL fires (exit_position/STD_DYNAMIC_SL) so the original signal row
+    is marked closed without needing a matching order_id."""
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
+        cur = conn.execute(
+            "UPDATE signals SET status='completed', completion_time=? WHERE id=? AND status='active'",
+            (completion_time, signal_id),
         )
         conn.commit()
         return cur.rowcount > 0

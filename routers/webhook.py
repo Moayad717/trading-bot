@@ -11,8 +11,9 @@ from typing import Any, Dict
 from fastapi import APIRouter, HTTPException, Request, status
 
 from config import now_local, settings
+from config import now_local as _now_local
 from db import (
-    clear_close_original_order_id_sync,
+    complete_signal_by_id_sync,
     get_counter_signal_by_of_id_sync,
     get_original_signal_by_of_id_sync,
     insert_signal_sync,
@@ -259,16 +260,22 @@ def _verify_secret(request: Request) -> None:
 def _handle_exit_position_sync(payload: dict, exchange: Any) -> None:
     """Handle exit_position alerts from Pine.
 
-    STD_DYNAMIC_SL — counter's TP hit, which is the original's dynamic SL.
-        The close_original limit order placed at counter-TP should auto-fill
-        through the WS. As a safety measure we cancel the original's regular TP
-        order to prevent a conflicting reduce-only from staying open.
+    STD_DYNAMIC_SL — counter's TP hit, which triggered the Partial SL on the
+        original position.  Bybit fires the SL market order automatically; we
+        don't track it via WS (no pre-known order_id from set_trading_stop).
+        Actions:
+          1. Cancel original's regular TP order (Bybit auto-cancels reduceOnly
+             when the position closes, but being explicit avoids race conditions).
+          2. Mark original signal COMPLETED in DB (Pine is the authority that the
+             position is now closed).
 
     STD_TP_COUNTER_STILL_OPEN — original reached its own TP naturally while the
         counter was still alive.
-        1. Cancel close_original order (dynamic SL no longer needed).
-        2. Cancel counter's TP order.
-        3. Close counter position at market.
+        Actions:
+          1. Remove the Partial SL from the original's (now-closed) position via
+             cancel_partial_sl so Bybit doesn't reject the call on a stale SL.
+          2. Cancel counter's TP order.
+          3. Market-close the counter position.
     """
     try:
         of_id  = payload.get("id", "")
@@ -281,8 +288,7 @@ def _handle_exit_position_sync(payload: dict, exchange: Any) -> None:
         counter  = get_counter_signal_by_of_id_sync(of_id)
 
         if reason == "STD_DYNAMIC_SL":
-            # Counter TP filled → close_original should auto-fill via WS.
-            # Cancel original's TP so there is no conflicting reduce-only.
+            # 1. Cancel original's TP (position closing via SL, TP is now orphaned)
             if original and original.get("tp_order_id"):
                 try:
                     exchange.cancel_order(original["tp_order_id"], original["symbol"])
@@ -292,31 +298,52 @@ def _handle_exit_position_sync(payload: dict, exchange: Any) -> None:
                     )
                 except Exception as exc:
                     logger.warning(
-                        "exit_position/STD_DYNAMIC_SL: cancel original TP failed (may already be gone): %s",
-                        exc,
+                        "exit_position/STD_DYNAMIC_SL: cancel original TP failed "
+                        "(may already be gone): %s", exc,
                     )
 
+            # 2. Mark original as completed — Pine confirms position is now closed
+            if original:
+                closed = complete_signal_by_id_sync(
+                    original["id"], _now_local().isoformat()
+                )
+                logger.info(
+                    "exit_position/STD_DYNAMIC_SL: original signal id=%s marked completed "
+                    "(db_updated=%s) symbol=%s",
+                    original["id"], closed, original["symbol"],
+                )
+            else:
+                logger.warning(
+                    "exit_position/STD_DYNAMIC_SL: no active original signal for of_id=%s "
+                    "— cannot mark completed",
+                    of_id,
+                )
+
         elif reason == "STD_TP_COUNTER_STILL_OPEN":
-            # Original TP hit naturally — cancel close_original, close counter.
-            if original and original.get("close_original_order_id"):
+            # 1. Remove the Partial SL from original's position (it's already closed by TP)
+            if original:
                 try:
-                    exchange.cancel_order(
-                        original["close_original_order_id"], original["symbol"]
+                    orig_action  = original["action"]
+                    position_idx = 1 if orig_action == "buy" else 2
+                    exchange.cancel_partial_sl(
+                        symbol=original["symbol"],
+                        position_idx=position_idx,
+                        category=original.get("category", "linear"),
                     )
-                    clear_close_original_order_id_sync(original["id"])
                     logger.info(
-                        "exit_position/STD_TP_COUNTER_STILL_OPEN: cancelled close_original "
-                        "order_id=%s symbol=%s",
-                        original["close_original_order_id"], original["symbol"],
+                        "exit_position/STD_TP_COUNTER_STILL_OPEN: removed Partial SL "
+                        "from original signal_id=%s symbol=%s",
+                        original["id"], original["symbol"],
                     )
                 except Exception as exc:
                     logger.warning(
-                        "exit_position/STD_TP_COUNTER_STILL_OPEN: cancel close_original failed: %s",
-                        exc,
+                        "exit_position/STD_TP_COUNTER_STILL_OPEN: cancel_partial_sl failed "
+                        "(position already closed, SL auto-removed): %s", exc,
                     )
 
+            # 2. Cancel counter TP + 3. Market-close counter
             if counter:
-                ctr_action   = counter["action"]  # "buy" or "sell"
+                ctr_action   = counter["action"]
                 close_side   = "Sell" if ctr_action == "buy" else "Buy"
                 position_idx = 1 if ctr_action == "buy" else 2
 
@@ -356,7 +383,10 @@ def _handle_exit_position_sync(payload: dict, exchange: Any) -> None:
                     )
 
         else:
-            logger.warning("exit_position: unrecognised reason=%r of_id=%s — no action taken", reason, of_id)
+            logger.warning(
+                "exit_position: unrecognised reason=%r of_id=%s — no action taken",
+                reason, of_id,
+            )
 
     except Exception as exc:
         logger.error("Unexpected error in _handle_exit_position_sync: %s", exc)
@@ -365,8 +395,10 @@ def _handle_exit_position_sync(payload: dict, exchange: Any) -> None:
 def _handle_cancel_close_original_sync(payload: dict, exchange: Any) -> None:
     """Handle cancel_close_original alerts.
 
-    Cancels the dynamic-SL limit order placed on the original position and
-    clears the stored order ID so it is not re-used.
+    Removes the Partial stop-loss that was set on the original position when
+    the counter entry filled.  The SL is position-attached (set via
+    set_trading_stop), so cancellation is done by calling cancel_partial_sl
+    rather than cancel_order.
     """
     try:
         of_id = payload.get("id", "")
@@ -381,28 +413,25 @@ def _handle_cancel_close_original_sync(payload: dict, exchange: Any) -> None:
             )
             return
 
-        close_oid = original.get("close_original_order_id")
-        if not close_oid:
-            logger.info(
-                "cancel_close_original: no close_original_order_id on original signal id=%s "
-                "(may have already been cancelled or filled)",
-                original["id"],
-            )
-            return
+        orig_action  = original["action"]
+        position_idx = 1 if orig_action == "buy" else 2
 
         try:
-            exchange.cancel_order(close_oid, original["symbol"])
-            clear_close_original_order_id_sync(original["id"])
+            exchange.cancel_partial_sl(
+                symbol=original["symbol"],
+                position_idx=position_idx,
+                category=original.get("category", "linear"),
+            )
             logger.info(
-                "cancel_close_original: cancelled order_id=%s symbol=%s original_signal_id=%s",
-                close_oid, original["symbol"], original["id"],
+                "cancel_close_original: Partial SL removed from original signal_id=%s symbol=%s",
+                original["id"], original["symbol"],
             )
         except Exception as exc:
+            # Bybit rejects the call if the position is already flat — that's fine.
             logger.warning(
-                "cancel_close_original: Bybit cancel failed (order may already be gone): %s", exc
+                "cancel_close_original: cancel_partial_sl failed "
+                "(position may already be closed, SL auto-removed): %s", exc,
             )
-            # Still clear the DB field so stale IDs don't block future calls.
-            clear_close_original_order_id_sync(original["id"])
 
     except Exception as exc:
         logger.error("Unexpected error in _handle_cancel_close_original_sync: %s", exc)
@@ -416,6 +445,32 @@ def _place_order_sync(signal_create: Any, exchange: Any) -> None:
     All errors are logged — never raised (no HTTP context available).
     """
     try:
+        # ── COUNTER guard — must run before ANY exchange call ─────────────────
+        # If the original signal is not active in our DB, refuse to open the
+        # counter position.  An unhedged counter (no original to close) would be
+        # an unmanaged directional trade.
+        if (signal_create.pattern_type or "").upper() == "COUNTER":
+            of_id = signal_create.of_id or ""
+            if not of_id:
+                logger.error(
+                    "COUNTER order REJECTED — payload missing 'id'/of_id field: "
+                    "symbol=%s. Refusing to open unhedged counter position.",
+                    signal_create.symbol,
+                )
+                return
+            original = get_original_signal_by_of_id_sync(of_id)
+            if not original:
+                logger.error(
+                    "COUNTER order REJECTED — no active original signal found for "
+                    "of_id=%s symbol=%s. Refusing to open unhedged counter position.",
+                    of_id, signal_create.symbol,
+                )
+                return
+            logger.info(
+                "COUNTER guard passed: of_id=%s original_signal_id=%s symbol=%s",
+                of_id, original["id"], signal_create.symbol,
+            )
+
         if settings.NET_DELTA_CAP_ENABLED:
             if _check_net_delta(signal_create, exchange) == "REFUSE":
                 logger.info(

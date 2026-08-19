@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, Optional
 
 from models.signal import Action, OrderType, SignalCreate
@@ -127,6 +128,17 @@ def parse(payload: Dict[str, Any]) -> SignalCreate:
     raw_of_id = _find(payload, _OF_ID_KEYS)
     of_id: Optional[str] = str(raw_of_id).strip() if raw_of_id is not None else None
 
+    # close_original — optional block present only in COUNTER payloads.
+    # Stored verbatim as a JSON string so order_tracker can read the exact
+    # SL parameters (trigger_price, mode, order_type, place_on) at fill time.
+    close_original_json: Optional[str] = None
+    co_raw = payload.get("close_original")
+    if isinstance(co_raw, dict) and co_raw:
+        try:
+            close_original_json = json.dumps(co_raw)
+        except (TypeError, ValueError):
+            pass  # malformed — treat as absent; order_tracker falls back to take_profit
+
     # Stop loss — flat fields only
     stop_loss = _to_float(_find(payload, _STOP_LOSS_KEYS), "stop_loss")
 
@@ -169,4 +181,5 @@ def parse(payload: Dict[str, Any]) -> SignalCreate:
         pattern_type=pattern_type,
         interval=interval,
         of_id=of_id,
+        close_original_json=close_original_json,
     )

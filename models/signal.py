@@ -42,6 +42,7 @@ class SignalCreate(BaseModel):
     pattern_type: Optional[str] = None
     interval: Optional[str] = None
     of_id: Optional[str] = None
+    close_original_json: Optional[str] = None  # JSON blob from close_original payload block
 
     @field_validator("symbol")
     @classmethod

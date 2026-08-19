@@ -81,6 +81,52 @@ class BybitExchange(BaseExchange):
             "raw": response,
         }
 
+    def place_partial_sl(
+        self,
+        symbol: str,
+        position_idx: int,
+        sl_trigger_price: float,
+        sl_size: float,
+        category: str = "linear",
+    ) -> Dict[str, Any]:
+        """Attach a Partial stop-loss to an open position via set_trading_stop.
+
+        tpslMode="Partial" targets only sl_size contracts, leaving the rest of
+        the position untouched.  slOrderType="Market" ensures the stop fills
+        immediately when triggered rather than sitting on the book as a limit
+        (which would be on the active side and fill at once for a short position).
+        """
+        params: Dict[str, Any] = {
+            "category":       category,
+            "symbol":         symbol,
+            "tpslMode":       "Partial",
+            "slSize":         str(sl_size),
+            "slTriggerPrice": str(sl_trigger_price),
+            "slOrderType":    "Market",
+            "positionIdx":    position_idx,
+        }
+        response: Any = self._client.set_trading_stop(**params)
+        self._raise_for_error(response)
+        return response.get("result", {})
+
+    def cancel_partial_sl(
+        self,
+        symbol: str,
+        position_idx: int,
+        category: str = "linear",
+    ) -> Dict[str, Any]:
+        """Remove the Partial SL by resetting slSize to 0 via set_trading_stop."""
+        params: Dict[str, Any] = {
+            "category":    category,
+            "symbol":      symbol,
+            "tpslMode":    "Partial",
+            "slSize":      "0",
+            "positionIdx": position_idx,
+        }
+        response: Any = self._client.set_trading_stop(**params)
+        self._raise_for_error(response)
+        return response.get("result", {})
+
     def place_market_close_order(
         self,
         symbol: str,
