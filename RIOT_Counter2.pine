@@ -1,5 +1,5 @@
 //@version=6
-indicator("RIOT + Counter", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+indicator("RIOT 8003 L UNIFIED (STD + Counter)", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
 
 // ============================================================================
 // MERGE NOTES:
@@ -12,25 +12,46 @@ indicator("RIOT + Counter", overlay=true, max_boxes_count=500, max_lines_count=5
 //   the methodology actually used in the historical $-P&L backtest, so the
 //   validated results (win rate, speed, net $ at 10m/15m/30m/2h) apply.
 // - Dynamic SL: the STD order flow has NO stop-loss until its Counter fires.
-//   The instant the Counter fills (ARMED -> ACTIVE), STD.sl_price is set to
-//   Counter.tp_price. If price then reaches that level, the STD flow is
-//   marked closed (dynamic-SL) AND a separate "exit_position" alert fires
-//   with the same deterministic id, so your execution bot can close the
-//   original position. This assumes your bot supports an exit-by-id action —
-//   verify that before relying on it; if it doesn't, this alert is inert.
+//   The instant the Counter FILLS, ONE alert goes out carrying two resting
+//   limit orders: the counter's own entry (TP attached as usual) AND a
+//   reduce-only limit on the ORIGINAL position at that same TP price — the
+//   dynamic SL. Both sit on the exchange from that moment, so whichever side
+//   price reaches, the exchange matches it directly. Pine never has to notice
+//   the TP being reached on a later bar, and no second alert is sent to close.
+//   Requires bot support for the "close_original" block on the counter payload
+//   and for "cancel_close_original" (see below). The close_original order MUST
+//   be placed on the counter's ENTRY FILL event, never on alert receipt — see
+//   the "place_on" note above build_counter_fill_payload().
 // - If Counter Trade is disabled and the STD box's far end still gets swept,
 //   the STD flow is simply marked closed with no SL price (matches the
 //   "only if counter is activated" rule literally).
-// - Closed STD order flows are removed from tracking entirely (not kept for
-//   display) to avoid unbounded memory growth; their drawn objects are
-//   explicitly deleted first so nothing is orphaned on the chart.
 // - Long and short entries carry separate margin inputs on both the STD leg
 //   and the Counter leg, matching the live bot's asymmetric long/short cost
 //   structure.
-// - TP is re-checked every bar even after a counter has armed/filled — if
-//   price recovers to the STD's own TP while a counter is live, the STD
-//   closes as TP (not SL) and the counter is closed out too, so nothing sits
-//   stuck at "ARMED" forever and no stale dynamic-SL alert fires later.
+// - TP is re-checked every bar even after a counter has armed/filled. If price
+//   recovers to the STD's own TP while a counter is live, the STD closes on its
+//   own TP — and the reduce-only SL limit still resting on the book for that
+//   position is no longer wanted, so a "cancel_close_original" alert fires to
+//   pull it. Without this the SL limit is orphaned on the exchange.
+// - The counter's OWN TP is only evaluated on bars AFTER its fill bar, and it
+//   is bookkeeping only (no alert) — the real close is already resting on the
+//   exchange. The guard still matters so the chart/table don't mark a counter
+//   completed on the very bar it filled.
+// - Counter box visualization also draws the ORIGINAL signal's entry/TP as
+//   dashed reference lines, so once the original's own box is deleted (on
+//   close) its levels are still visible next to the counter that replaced it.
+//
+// VISUALS:
+// - Scale anchor plot so the price scale never collapses when drawings are off.
+// - Optional STD info label (off by default) on FILLED flows only: state,
+//   entry, TP + distance %, SL once live, and the id used in the alerts.
+// - Live markers: on the last bar, a compact price tag past the current candle
+//   for every live level (STD entry/TP/SL and Counter entry/TP).
+// - History is user-controlled per side (see the History / Retention group):
+//   KEEP decides whether a completed record survives at all, SHOW decides
+//   whether its drawings are on the chart. Completed records are always
+//   evicted before live ones when an array fills, so retaining history can
+//   never push an open position out of tracking.
 // ============================================================================
 
 // ============================== 1. INPUTS ==============================
@@ -59,16 +80,32 @@ in_show_box       = input.bool(true, "Show STD box", group=gV)
 in_show_mk        = input.bool(true, "Show STD markers", group=gV)
 in_show_tp        = input.bool(true, "Show STD entry/TP/SL lines", group=gV)
 in_show_counter        = input.bool(true, "Show Counter boxes", group=gV)
-in_show_counter_done    = input.bool(true, "Show completed Counter trades", group=gV)
+in_show_std_lbl   = input.bool(false, "Show STD info labels (filled only)", group=gV, tooltip="Text label on each FILLED STD order flow showing entry / TP / SL / id. Off by default because a busy chart can carry many open flows at once.")
+in_show_live      = input.bool(true, "Show live markers at right edge", group=gV, tooltip="On the last bar, print the price of every live position (STD and Counter) at the current bar so the numbers are readable without hovering.")
 in_show_table     = input.bool(true, "Show stats table", group=gV)
 in_tbl_pos        = input.string("Top Right", "Table position",
      options=["Top Right","Top Left","Top Center","Middle Right","Middle Left",
               "Middle Center","Bottom Right","Bottom Left","Bottom Center"], group=gV)
 
+// Retention is deliberately separate from visibility: KEEP decides whether the
+// record survives at all (memory + stats), SHOW only decides whether its
+// drawings are on the chart. That way history can be retained while the chart
+// stays clean, or cleared entirely when it isn't wanted.
+gH = "History / Retention"
+in_keep_std_done  = input.bool(false, "Keep completed STD order flows",   group=gH, tooltip="OFF: a closed STD flow is dropped from tracking and its drawings deleted (lowest memory, no history). ON: the record is kept so its zone can stay on the chart for review. Closed records are always evicted before open ones when the tracking array fills, so keeping history never pushes a live position out of tracking.")
+in_show_std_done  = input.bool(true,  "  └ Show completed STD on chart",  group=gH, tooltip="Only applies when 'Keep completed STD order flows' is ON. Turn off to keep the records but hide the drawings.")
+in_keep_ctr_done  = input.bool(true,  "Keep completed Counter trades",    group=gH, tooltip="OFF: a finished counter is dropped from tracking and its drawings deleted. ON: kept for review.")
+in_show_counter_done = input.bool(true, "  └ Show completed Counter on chart", group=gH, tooltip="Only applies when 'Keep completed Counter trades' is ON.")
+
 bool IS_BULL = in_dir == "Bullish"
 bool GATED   = in_mode == "STD-ORBK"
 string tf_actual = timeframe.period
 [tf_open, tf_high, tf_low, tf_close, tf_time] = request.security(syminfo.tickerid, tf_actual, [open, high, low, close, time], lookahead=barmerge.lookahead_off)
+
+// Scale anchor — an invisible plot keeps the price scale tied to price even
+// when every other drawing is off-screen or hidden, so the chart never
+// auto-scales to nothing.
+plot(close, title="Scale Anchor", color=color.new(color.white, 100), editable=false)
 
 // ============================== 2. HELPERS ==============================
 get_table_pos(s) =>
@@ -95,16 +132,34 @@ build_payload(is_long, entry, tp, cur, margin, rule, ofid) =>
     string pp = deep ? "" : '"price": "' + str.tostring(entry, "#.#####") + '", '
     '{"id": "' + ofid + '", "interval": "' + tf_actual + '", "trigger_price": "' + str.tostring(cur) + '", "tv_instrument": "' + in_inst + '", "action": "' + act + '", "order": {' + pp + '"amount": "' + str.tostring(cost) + '", "currency_type": "quote", "order_type": "' + otype + '"}, "take_profit": {"enabled": true, "steps": [{"order_type": "limit", "price_percent": ' + str.tostring(is_long ? (in_roi / in_lev) : -(in_roi / in_lev), "#.####") + ', "volume_percent": 100}]}, "rule_type": "' + rule + '"}'
 
-build_exit_payload(ofid, reason, cur) =>
-    '{"id": "' + ofid + '", "tv_instrument": "' + in_inst + '", "action": "exit_position", "reason": "' + reason + '", "trigger_price": "' + str.tostring(cur) + '"}'
+// Counter fill payload — ONE alert that carries BOTH resting limit orders:
+//   1. the counter's own entry (with its TP attached, as usual), and
+//   2. "close_original": a reduce-only LIMIT order placed on the ORIGINAL STD
+//      position at the SAME price as the counter's TP.
+// Both rest on the exchange from this moment on. Whichever way price goes, the
+// exchange matches them itself — no second alert, no waiting for Pine to notice
+// a later bar close.
+//
+// ⚠ "place_on": "entry_fill" is a HARD requirement on the receiving bot, not a
+// hint. The close_original order must be placed at the instant the counter's
+// ENTRY actually fills — simultaneously with the counter's own TP — and never
+// on receipt of this alert. The counter's entry can go out as a limit that does
+// not fill (price wicks the level and rejects); placing the SL on receipt would
+// leave a stop-loss on the original with no counter position to offset it, so
+// the original would eat the full loss with no hedge. Pairing must be absolute:
+// counter open <=> SL placed.
+build_counter_fill_payload(is_long, entry, cur, margin, ofid, sl_price, orig_is_long) =>
+    string act  = is_long ? "enter_long" : "enter_short"
+    float  cost = margin * in_lev
+    bool   deep = is_long ? (cur <= entry) : (cur >= entry)
+    string otype = deep ? "market" : "limit"
+    string pp = deep ? "" : '"price": "' + str.tostring(entry, "#.#####") + '", '
+    '{"id": "' + ofid + '", "interval": "' + tf_actual + '", "trigger_price": "' + str.tostring(cur) + '", "tv_instrument": "' + in_inst + '", "action": "' + act + '", "order": {' + pp + '"amount": "' + str.tostring(cost) + '", "currency_type": "quote", "order_type": "' + otype + '"}, "take_profit": {"enabled": true, "steps": [{"order_type": "limit", "price_percent": ' + str.tostring(is_long ? (in_roi / in_lev) : -(in_roi / in_lev), "#.####") + ', "volume_percent": 100}]}, "rule_type": "COUNTER", "close_original": {"id": "' + ofid + '", "order_type": "limit", "price": "' + str.tostring(sl_price, "#.#####") + '", "side": "' + (orig_is_long ? "sell" : "buy") + '", "reduce_only": true, "place_on": "entry_fill", "reason": "STD_DYNAMIC_SL"}}'
 
-// Counter entries are always market orders (price already at level).
-// Includes close_original block so the bot knows how to set the partial SL
-// on the original position when this counter entry fills.
-build_counter_payload(is_long, entry, tp, cur, margin, ofid) =>
-    string act = is_long ? "enter_long" : "enter_short"
-    float cost = margin * in_lev
-    '{"id": "' + ofid + '", "interval": "' + tf_actual + '", "trigger_price": "' + str.tostring(cur) + '", "tv_instrument": "' + in_inst + '", "action": "' + act + '", "order": {"amount": "' + str.tostring(cost) + '", "currency_type": "quote", "order_type": "market"}, "take_profit": {"enabled": true, "steps": [{"order_type": "limit", "price_percent": ' + str.tostring(is_long ? (in_roi / in_lev) : -(in_roi / in_lev), "#.####") + ', "volume_percent": 100}]}, "rule_type": "COUNTER", "close_original": {"trigger_price": "' + str.tostring(tp, "#.#####") + '", "mode": "Partial", "order_type": "Market", "place_on": "entry_fill"}}'
+// Cancel a resting reduce-only SL that is no longer needed — fired when the
+// ORIGINAL reaches its own TP while the SL order is still sitting on the book.
+build_cancel_sl_payload(ofid, cur) =>
+    '{"id": "' + ofid + '", "tv_instrument": "' + in_inst + '", "action": "cancel_close_original", "reason": "STD_TP_HIT_FIRST", "trigger_price": "' + str.tostring(cur) + '"}'
 
 tp_of(is_long, e) => is_long ? e * (1 + (in_roi / 100) / in_lev) : e * (1 - (in_roi / 100) / in_lev)
 
@@ -145,6 +200,7 @@ type CounterRecord
     int    conf_bar
     string state          // ARMED, ACTIVE, INACTIVE
     int    end_time
+    int    fill_bar
     box    b_ref
     line   en_ref
     line   tp_ref
@@ -214,8 +270,8 @@ var bool  lf_mitig = false
 // ---- unified order-flow / counter tracking ----
 var array<OrderFlow>     of_watch = array.new<OrderFlow>()
 var array<CounterRecord> counters = array.new<CounterRecord>()
-var int MAX_WATCH = 500
-var int MAX_CTR   = 500
+var int MAX_WATCH = 150
+var int MAX_CTR   = 150
 
 // ---- persistent stats (survive array trims/removals) ----
 var int std_total         = 0
@@ -449,8 +505,20 @@ if barstate.isconfirmed
 
 // ============================== 9. ORDER FLOW LIFECYCLE + COUNTER ARMING ==============================
 if barstate.isconfirmed
+    // Trim of_watch. With history retention ON, closed records accumulate and
+    // must NEVER push a still-open flow out of tracking — an evicted open flow
+    // stops being managed entirely (no TP detection, its counter never arms).
+    // So always evict the oldest CLOSED record first, and only fall back to
+    // dropping the oldest record of any state when nothing closed is left.
     while array.size(of_watch) > MAX_WATCH
-        old_of = array.get(of_watch, 0)
+        int drop_i = -1
+        for k = 0 to array.size(of_watch) - 1
+            if array.get(of_watch, k).state == "CLOSED"
+                drop_i := k
+                break
+        if drop_i == -1
+            drop_i := 0
+        old_of = array.get(of_watch, drop_i)
         if not na(old_of.b_ref)
             box.delete(old_of.b_ref)
         if not na(old_of.en_ref)
@@ -461,9 +529,19 @@ if barstate.isconfirmed
             line.delete(old_of.sl_ref)
         if not na(old_of.lbl_ref)
             label.delete(old_of.lbl_ref)
-        array.shift(of_watch)
+        array.remove(of_watch, drop_i)
+
+    // Same rule for counters: an INACTIVE (finished) counter goes before an
+    // ARMED/ACTIVE one, so retention can never starve a live counter.
     while array.size(counters) > MAX_CTR
-        old_c = array.get(counters, 0)
+        int drop_c = -1
+        for k = 0 to array.size(counters) - 1
+            if array.get(counters, k).state == "INACTIVE"
+                drop_c := k
+                break
+        if drop_c == -1
+            drop_c := 0
+        old_c = array.get(counters, drop_c)
         if not na(old_c.b_ref)
             box.delete(old_c.b_ref)
             line.delete(old_c.en_ref)
@@ -471,28 +549,55 @@ if barstate.isconfirmed
             line.delete(old_c.orig_en_ref)
             line.delete(old_c.orig_tp_ref)
             label.delete(old_c.lbl_ref)
-        array.shift(counters)
+        array.remove(counters, drop_c)
+
+    // Optional purge of finished counters when retention is OFF. Backward
+    // iteration so removals don't skip elements.
+    if not in_keep_ctr_done and array.size(counters) > 0
+        for j = array.size(counters) - 1 to 0
+            cpg = array.get(counters, j)
+            if cpg.state == "INACTIVE"
+                if not na(cpg.b_ref)
+                    box.delete(cpg.b_ref)
+                    line.delete(cpg.en_ref)
+                    line.delete(cpg.tp_ref)
+                    line.delete(cpg.orig_en_ref)
+                    line.delete(cpg.orig_tp_ref)
+                    label.delete(cpg.lbl_ref)
+                array.remove(counters, j)
 
     if array.size(of_watch) > 0
         for i = array.size(of_watch) - 1 to 0
             of = array.get(of_watch, i)
 
             if of.state == "CLOSED"
-                // Delete drawn objects BEFORE dropping the record — otherwise
-                // the box/lines/label are orphaned on the chart forever
-                // (this is the exact bug class hunted down earlier in the
-                // Counter Entry script's MAX_WATCH eviction path).
-                if not na(of.b_ref)
-                    box.delete(of.b_ref)
-                if not na(of.en_ref)
-                    line.delete(of.en_ref)
-                if not na(of.tp_ref)
-                    line.delete(of.tp_ref)
-                if not na(of.sl_ref)
-                    line.delete(of.sl_ref)
-                if not na(of.lbl_ref)
-                    label.delete(of.lbl_ref)
-                array.remove(of_watch, i)
+                // Drawings are dropped when the record is being purged OR when
+                // completed flows are set to hidden. Deleting BEFORE removing
+                // the record matters — otherwise the box/lines/label are
+                // orphaned on the chart forever (the exact bug class hunted
+                // down earlier in the Counter Entry script's eviction path).
+                bool purge_rec  = not in_keep_std_done
+                bool drop_draws = purge_rec or not in_show_std_done
+                if drop_draws
+                    if not na(of.b_ref)
+                        box.delete(of.b_ref)
+                        of.b_ref := na
+                    if not na(of.en_ref)
+                        line.delete(of.en_ref)
+                        of.en_ref := na
+                    if not na(of.tp_ref)
+                        line.delete(of.tp_ref)
+                        of.tp_ref := na
+                    if not na(of.sl_ref)
+                        line.delete(of.sl_ref)
+                        of.sl_ref := na
+                    if not na(of.lbl_ref)
+                        label.delete(of.lbl_ref)
+                        of.lbl_ref := na
+                if purge_rec
+                    array.remove(of_watch, i)
+                else
+                    array.set(of_watch, i, of)
                 continue
 
             if bar_index <= of.conf_bar
@@ -506,19 +611,33 @@ if barstate.isconfirmed
                     of.state := "ACTIVE"
                     of.fill_bar := bar_index
 
-            // TP check — runs every bar regardless of armed state, so a late
-            // recovery to the STD's own TP is never missed once a counter has
-            // been armed/filled (previously this was pre-arm only, so an
-            // armed flow could sit at "ARMED" forever after its own TP hit).
-            if of.entered and not of.tp_hit and not of.sl_hit
+            // TP check — only on bars AFTER the fill bar. Chronology: the entry
+            // alert only goes out at the close of the bar where the fill is
+            // detected, so the position does not exist on the exchange until
+            // that bar has closed. A TP "touch" during the fill bar itself is
+            // therefore not reachable in reality and must be ignored — a trade
+            // has to go PENDING -> ACTIVE -> (next bar or later) TP.
+            // Runs regardless of armed state, so a late recovery to the STD's
+            // own TP is never missed once a counter has armed/filled.
+            if of.entered and bar_index > of.fill_bar and not of.tp_hit and not of.sl_hit
                 bool tp_touch = of.is_bull ? (tf_high >= of.tp_price) : (tf_low <= of.tp_price)
                 if tp_touch
                     of.tp_hit := true
                     of.state := "CLOSED"
                     std_completed += 1
-                    // If a counter was already live, the original resolved via
-                    // its own TP (not via the dynamic SL) — close the counter
-                    // out too so nothing is left unmanaged or double-fires later.
+                    // Freeze the drawn levels at the closing bar. This path
+                    // short-circuits with `continue`, so without this the
+                    // lines would stop one bar short of where they resolved.
+                    if not na(of.en_ref)
+                        line.set_x2(of.en_ref, bar_index)
+                    if not na(of.tp_ref)
+                        line.set_x2(of.tp_ref, bar_index)
+                    if not na(of.sl_ref)
+                        line.set_x2(of.sl_ref, bar_index)
+                    // The ORIGINAL reached its own TP. If a counter had already
+                    // filled, a reduce-only SL limit is still resting on the book
+                    // for this position — cancel it, or it is left orphaned once
+                    // the position closes on its own TP.
                     if of.armed and array.size(counters) > 0
                         for j = array.size(counters) - 1 to 0
                             c = array.get(counters, j)
@@ -527,8 +646,16 @@ if barstate.isconfirmed
                                 c.state := "INACTIVE"
                                 c.end_time := tf_time
                                 counter_completed += 1
-                                if was_active
-                                    alert(build_exit_payload(of.id, "STD_TP_COUNTER_STILL_OPEN", tf_close), alert.freq_all)
+                                // Only cancel an SL that can still be resting.
+                                // If this same bar also reached the counter's TP,
+                                // that resting SL limit filled along with it —
+                                // cancelling it would target an order that no
+                                // longer exists. When both levels print on one
+                                // bar the intrabar order is unknowable, so the
+                                // safe assumption is that the SL filled.
+                                bool ctr_tp_same_bar = c.is_long ? (tf_high >= c.tp_price) : (tf_low <= c.tp_price)
+                                if was_active and not ctr_tp_same_bar
+                                    alert(build_cancel_sl_payload(of.id, tf_close), alert.freq_all)
                                 array.set(counters, j, c)
                                 break
                     array.set(of_watch, i, of)
@@ -544,7 +671,7 @@ if barstate.isconfirmed
                         of.armed := true
                         of.state := "ARMED"
                         counter_total += 1
-                        array.push(counters, CounterRecord.new(is_long=not of.is_bull, entry_price=of.counter_entry, tp_price=of.counter_tp, box_top=of.box_top, box_bot=of.box_bot, entry_time=tf_time, conf_time=of.conf_time, conf_bar=bar_index, state="ARMED", end_time=na, b_ref=na, en_ref=na, tp_ref=na, orig_en_ref=na, orig_tp_ref=na, lbl_ref=na, of_id=of.id))
+                        array.push(counters, CounterRecord.new(is_long=not of.is_bull, entry_price=of.counter_entry, tp_price=of.counter_tp, box_top=of.box_top, box_bot=of.box_bot, entry_time=tf_time, conf_time=of.conf_time, conf_bar=bar_index, state="ARMED", end_time=na, fill_bar=na, b_ref=na, en_ref=na, tp_ref=na, orig_en_ref=na, orig_tp_ref=na, lbl_ref=na, of_id=of.id))
                     else
                         of.state := "CLOSED"
                         std_completed += 1
@@ -557,17 +684,31 @@ if barstate.isconfirmed
                     for j = array.size(counters) - 1 to 0
                         c = array.get(counters, j)
                         if c.of_id == of.id and (c.state == "ARMED" or c.state == "ACTIVE")
+                            // COUNTER FILLS — the single trigger event. One alert
+                            // places BOTH resting limit orders at once:
+                            //   • the counter's entry, with its own TP attached
+                            //   • a reduce-only limit on the ORIGINAL at that same
+                            //     TP price = the dynamic SL
+                            // From here the exchange matches them itself. Pine does
+                            // not need to observe the TP being reached later, and
+                            // no second alert is ever sent for the close.
                             if c.state == "ARMED" and bar_index > c.conf_bar
                                 bool ctr_touch = c.is_long ? (tf_low <= c.entry_price) : (tf_high >= c.entry_price)
                                 if ctr_touch
-                                    c.state := "ACTIVE"
+                                    c.state    := "ACTIVE"
+                                    c.fill_bar := bar_index
                                     of.sl_price := c.tp_price
                                     if in_show_tp
                                         of.sl_ref := line.new(bar_index, of.sl_price, bar_index, of.sl_price, color=color.new(color.orange, 0), width=1, style=line.style_dotted)
                                     if not na(c.entry_price) and not na(c.tp_price)
                                         float ctr_margin = c.is_long ? in_ctr_long_margin : in_ctr_short_margin
-                                        alert(build_counter_payload(c.is_long, c.entry_price, c.tp_price, tf_close, ctr_margin, of.id), alert.freq_all)
-                            if c.state == "ACTIVE"
+                                        alert(build_counter_fill_payload(c.is_long, c.entry_price, tf_close, ctr_margin, of.id, c.tp_price, of.is_bull), alert.freq_all)
+                            // Counter's TP reached — BOOKKEEPING ONLY. Both the
+                            // counter's TP and the original's SL were already
+                            // resting on the exchange since the fill above, so the
+                            // real closes happen there. This block just keeps the
+                            // on-chart state/table honest. No alert fires here.
+                            if c.state == "ACTIVE" and bar_index > c.fill_bar
                                 bool ctr_tp = c.is_long ? (tf_high >= c.tp_price) : (tf_low <= c.tp_price)
                                 if ctr_tp
                                     c.state := "INACTIVE"
@@ -576,7 +717,6 @@ if barstate.isconfirmed
                                     of.sl_hit := true
                                     of.state := "CLOSED"
                                     std_completed += 1
-                                    alert(build_exit_payload(of.id, "STD_DYNAMIC_SL", tf_close), alert.freq_all)
                             array.set(counters, j, c)
                             break
 
@@ -587,6 +727,31 @@ if barstate.isconfirmed
                 line.set_x2(of.tp_ref, bar_index)
             if not na(of.sl_ref)
                 line.set_x2(of.sl_ref, bar_index)
+
+            // STD info label — created once on the first bar the flow is
+            // FILLED, then follows the right edge with live state. Only filled
+            // flows get one: a pending flow is just a resting limit order and
+            // its box/lines already say everything, so labelling every pending
+            // flow would bury the chart on a busy timeframe.
+            if in_show_std_lbl and of.entered
+                string of_state = of.armed ? (na(of.sl_price) ? "Armed" : "Active + SL") : "Active"
+                float  of_delta = ((of.tp_price / of.entry_price) - 1) * 100
+                string of_lbl   = "[" + tf_actual + "] STD " + (of.is_bull ? "▲ LONG" : "▼ SHORT") + " [" + of_state + "]" +
+                       "\nEntry: " + str.tostring(of.entry_price, "#.#####") +
+                       "\nTP: "    + str.tostring(of.tp_price, "#.#####") + "  (" + str.tostring(of_delta, "#.##") + "%)" +
+                       (na(of.sl_price) ? "" : "\nSL: " + str.tostring(of.sl_price, "#.#####")) +
+                       "\nid: " + of.id
+                color of_lbl_col = of.is_bull ? color.new(#26a69a, 20) : color.new(#ef5350, 20)
+                if na(of.lbl_ref)
+                    of.lbl_ref := label.new(bar_index, of.entry_price, text=of_lbl, style=label.style_label_left, color=of_lbl_col, textcolor=color.white, size=size.small)
+                else
+                    label.set_x(of.lbl_ref, bar_index)
+                    label.set_y(of.lbl_ref, of.entry_price)
+                    label.set_text(of.lbl_ref, of_lbl)
+                    label.set_color(of.lbl_ref, of_lbl_col)
+            else if not na(of.lbl_ref)
+                label.delete(of.lbl_ref)
+                of.lbl_ref := na
 
             array.set(of_watch, i, of)
 
@@ -628,7 +793,12 @@ if barstate.isconfirmed and array.size(counters) > 0
         color orig_tp_col    = color.new(color.gray, 40)
 
         string state_txt = c.state == "ACTIVE" ? "Active" : c.state == "ARMED" ? "Armed" : "Completed"
-        string lbl_txt = "[" + tf_actual + "] Counter [" + state_txt + "]\nEntry: " + str.tostring(c.entry_price, "#.#####") + "\nTP: " + str.tostring(c.tp_price, "#.#####") + "\nid: " + c.of_id
+        float  delta_pct = ((c.tp_price / c.entry_price) - 1) * 100
+        string lbl_txt = "[" + tf_actual + "] ⚡ Counter " + (c.is_long ? "▲ LONG" : "▼ SHORT") + " [" + state_txt + "]" +
+               "\nEntry: " + str.tostring(c.entry_price, "#.#####") +
+               "\nTP: "    + str.tostring(c.tp_price, "#.#####") + "  (" + str.tostring(delta_pct, "#.##") + "%)" +
+               "\nSL on original: " + str.tostring(c.tp_price, "#.#####") +
+               "\nid: " + c.of_id
         float box_h = c.box_top - c.box_bot
         float lbl_y = c.is_long ? (c.box_bot - box_h * 0.5) : (c.box_top + box_h * 0.5)
 
@@ -654,6 +824,34 @@ if barstate.isconfirmed and array.size(counters) > 0
             label.set_color(c.lbl_ref, brd_c)
 
         array.set(counters, i, c)
+
+// ============================== 10b. LIVE MARKERS AT RIGHT EDGE ==============
+// On the last bar only, print a compact price tag just past the current candle
+// for every level that is still live, so the numbers can be read at a glance
+// without hovering over the lines. Pine rolls back last-bar drawings on every
+// tick, so these refresh in place instead of accumulating.
+if barstate.islast and in_show_live
+    int lm_off = 6
+
+    // --- live STD order flows (filled and not yet closed) ---
+    if array.size(of_watch) > 0
+        for i = 0 to array.size(of_watch) - 1
+            ofl = array.get(of_watch, i)
+            if ofl.entered and ofl.state != "CLOSED"
+                color lm_c = ofl.is_bull ? color.new(#26a69a, 10) : color.new(#ef5350, 10)
+                label.new(bar_index + lm_off, ofl.entry_price, text=(ofl.is_bull ? "▲ " : "▼ ") + str.tostring(ofl.entry_price, "#.#####"), style=label.style_label_left, color=lm_c, textcolor=color.white, size=size.tiny)
+                label.new(bar_index + lm_off, ofl.tp_price, text="TP " + str.tostring(ofl.tp_price, "#.#####"), style=label.style_label_left, color=color.new(color.teal, 55), textcolor=color.white, size=size.tiny)
+                if not na(ofl.sl_price)
+                    label.new(bar_index + lm_off, ofl.sl_price, text="SL " + str.tostring(ofl.sl_price, "#.#####"), style=label.style_label_left, color=color.new(color.orange, 20), textcolor=color.white, size=size.tiny)
+
+    // --- live counters (entry filled, TP not reached yet) ---
+    if array.size(counters) > 0
+        for i = 0 to array.size(counters) - 1
+            cl = array.get(counters, i)
+            if cl.state == "ACTIVE"
+                color lm_cc = cl.is_long ? color.new(#00e676, 10) : color.new(#ff1744, 10)
+                label.new(bar_index + lm_off, cl.entry_price, text="⚡ " + (cl.is_long ? "▲ " : "▼ ") + str.tostring(cl.entry_price, "#.#####"), style=label.style_label_left, color=lm_cc, textcolor=color.white, size=size.tiny)
+                label.new(bar_index + lm_off, cl.tp_price, text="⚡ TP " + str.tostring(cl.tp_price, "#.#####"), style=label.style_label_left, color=color.new(color.orange, 40), textcolor=color.white, size=size.tiny)
 
 // ============================== 11. STRUCTURE UPDATE ==============================
 if not neutral

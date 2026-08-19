@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from config import now_local, settings
 from config import now_local as _now_local
 from db import (
+    clear_close_original_order_id_sync,
     complete_signal_by_id_sync,
     get_counter_signal_by_of_id_sync,
     get_original_signal_by_of_id_sync,
@@ -260,22 +261,21 @@ def _verify_secret(request: Request) -> None:
 def _handle_exit_position_sync(payload: dict, exchange: Any) -> None:
     """Handle exit_position alerts from Pine.
 
-    STD_DYNAMIC_SL — counter's TP hit, which triggered the Partial SL on the
-        original position.  Bybit fires the SL market order automatically; we
-        don't track it via WS (no pre-known order_id from set_trading_stop).
-        Actions:
-          1. Cancel original's regular TP order (Bybit auto-cancels reduceOnly
-             when the position closes, but being explicit avoids race conditions).
-          2. Mark original signal COMPLETED in DB (Pine is the authority that the
-             position is now closed).
+    NOTE: The current Pine build (RIOT_Counter2) no longer fires exit_position
+    alerts.  Counter TP and original close_original both rest on the exchange as
+    limit orders and fill autonomously — Pine treats the counter TP hit as
+    bookkeeping-only and emits no alert.  This handler is kept for forward
+    compatibility with future Pine versions or manual operator calls.
 
-    STD_TP_COUNTER_STILL_OPEN — original reached its own TP naturally while the
-        counter was still alive.
-        Actions:
-          1. Remove the Partial SL from the original's (now-closed) position via
-             cancel_partial_sl so Bybit doesn't reject the call on a stale SL.
-          2. Cancel counter's TP order.
-          3. Market-close the counter position.
+    STD_DYNAMIC_SL — counter's TP hit; the close_original reduce-only limit on
+        the original fills at the same price via the WS.  As a safety net:
+          1. Cancel the original's regular TP order (Bybit auto-cancels reduceOnly
+             on a closed position, but being explicit avoids brief races).
+          2. Mark the original COMPLETED in the DB (WS should already handle this
+             via mark_close_original_filled_sync, so this is belt-and-suspenders).
+
+    STD_TP_COUNTER_STILL_OPEN — original reached its own TP naturally while a
+        counter was still alive (no longer fired by current Pine; kept for compat).
     """
     try:
         of_id  = payload.get("id", "")
@@ -393,12 +393,15 @@ def _handle_exit_position_sync(payload: dict, exchange: Any) -> None:
 
 
 def _handle_cancel_close_original_sync(payload: dict, exchange: Any) -> None:
-    """Handle cancel_close_original alerts.
+    """Handle cancel_close_original alerts from Pine.
 
-    Removes the Partial stop-loss that was set on the original position when
-    the counter entry filled.  The SL is position-attached (set via
-    set_trading_stop), so cancellation is done by calling cancel_partial_sl
-    rather than cancel_order.
+    Fired when the ORIGINAL signal reaches its own TP while a close_original
+    reduce-only limit order is still resting on the exchange.  The bot must
+    cancel that order so it is not matched later when it is no longer wanted.
+
+    Bybit auto-cancels reduce-only orders when the position that funded them is
+    closed, so the cancel call may fail if Bybit already removed it.  That is
+    harmless — we still clear the stored order_id from the DB.
     """
     try:
         of_id = payload.get("id", "")
@@ -413,25 +416,31 @@ def _handle_cancel_close_original_sync(payload: dict, exchange: Any) -> None:
             )
             return
 
-        orig_action  = original["action"]
-        position_idx = 1 if orig_action == "buy" else 2
+        close_oid = original.get("close_original_order_id")
+        if not close_oid:
+            # Counter never filled (ARMED only) → no close_original order was placed
+            logger.info(
+                "cancel_close_original: no close_original_order_id on signal id=%s "
+                "(counter may not have filled yet, or order already gone)",
+                original["id"],
+            )
+            return
 
         try:
-            exchange.cancel_partial_sl(
-                symbol=original["symbol"],
-                position_idx=position_idx,
-                category=original.get("category", "linear"),
-            )
+            exchange.cancel_order(close_oid, original["symbol"])
             logger.info(
-                "cancel_close_original: Partial SL removed from original signal_id=%s symbol=%s",
-                original["id"], original["symbol"],
+                "cancel_close_original: cancelled order_id=%s symbol=%s original_signal_id=%s",
+                close_oid, original["symbol"], original["id"],
             )
         except Exception as exc:
-            # Bybit rejects the call if the position is already flat — that's fine.
+            # Order may already be cancelled/filled by Bybit — that's fine.
             logger.warning(
-                "cancel_close_original: cancel_partial_sl failed "
-                "(position may already be closed, SL auto-removed): %s", exc,
+                "cancel_close_original: Bybit cancel_order failed "
+                "(order may have been auto-cancelled or already filled): %s", exc,
             )
+        finally:
+            # Always clear the stored ID so stale values don't block future calls.
+            clear_close_original_order_id_sync(original["id"])
 
     except Exception as exc:
         logger.error("Unexpected error in _handle_cancel_close_original_sync: %s", exc)

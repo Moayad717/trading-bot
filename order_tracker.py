@@ -11,6 +11,7 @@ from db import (
     get_signal_by_order_id_sync,
     get_original_signal_by_of_id_sync,
     link_auto_tp_sync,
+    mark_close_original_filled_sync,
     mark_entry_filled_sync,
     mark_tp_completed_sync,
     set_close_original_order_id_sync,
@@ -34,17 +35,19 @@ class OrderTracker:
     Subscribes to Bybit's private order stream via WebSocket.
 
     Entry fill  → status ACTIVE, entry_fill_time set, TP placed, tp_order_id stored.
-                  For COUNTER entries: also sets a Partial stop-loss on the original
-                  position at close_original.trigger_price (dynamic SL), using
-                  set_trading_stop instead of a reduce-only limit order.
-    TP fill     → status COMPLETED, completion_time set.
+                  For COUNTER entries: also places a reduce-only limit (close_original)
+                  on the original position at the counter's TP price (dynamic SL),
+                  and stores its order_id as close_original_order_id.
+
+    close_original fill  → original signal COMPLETED (dynamic SL hit).
+    TP fill              → signal COMPLETED.
+
     New reduce-only order → backup tp_order_id link via link_auto_tp_sync.
     Cancelled / Rejected / Expired → status FAILED.
 
-    The dynamic-SL fill on the original position is NOT tracked here via WebSocket
-    because set_trading_stop does not return a pre-known order_id.  Instead, the
-    exit_position/STD_DYNAMIC_SL Pine alert handler in webhook.py marks the
-    original signal COMPLETED when Pine confirms the counter's TP hit.
+    No exit_position alerts are expected from the current Pine build; the exchange
+    manages both the counter TP and the original close_original limit autonomously.
+    cancel_close_original is handled in webhook.py (webhook thread, not here).
 
     Runs in its own thread managed by pybit — safe to start/stop from asyncio lifespan.
     """
@@ -110,11 +113,22 @@ class OrderTracker:
                 order_id, order.get("symbol"),
             )
             self._maybe_place_tp(order)
-            # For COUNTER entries: set the Partial SL on the original position
+            # For COUNTER entries: place a reduce-only limit on the original position
             self._maybe_place_close_original(order)
             return
 
-        # ── 2. Regular TP fill ─────────────────────────────────────────────────
+        # ── 2. close_original fill (dynamic SL on the original position) ────────
+        # This fires when the counter's TP price is reached and the reduce-only
+        # limit placed on the original fills simultaneously with the counter's TP.
+        was_close_original = mark_close_original_filled_sync(order_id, fill_time)
+        if was_close_original:
+            logger.info(
+                "close_original filled → original position closed: order_id=%s symbol=%s",
+                order_id, order.get("symbol"),
+            )
+            return
+
+        # ── 3. Regular TP fill ─────────────────────────────────────────────────
         was_tp = mark_tp_completed_sync(order_id, fill_time)
         if was_tp:
             logger.info(
@@ -163,15 +177,21 @@ class OrderTracker:
             logger.error("Failed to place TP for order_id=%s: %s", order_id, exc)
 
     def _maybe_place_close_original(self, order: Dict[str, Any]) -> None:
-        """When a COUNTER entry fills, set a Partial stop-loss on the original position.
+        """When a COUNTER entry fills, place a reduce-only limit on the original position.
 
-        The SL trigger price comes from close_original_json stored with the signal
-        (populated from the Pine payload's close_original block).  Falls back to
-        counter's take_profit if the block is absent (older Pine versions).
+        The Pine payload's close_original block specifies:
+          "order_type": "limit"
+          "price":      "<counter's TP price>"  ← the dynamic SL level
+          "side":       "sell" (close long) or "buy" (close short)
+          "reduce_only": true
+          "place_on":   "entry_fill"
 
-        Uses Bybit's set_trading_stop (tpslMode=Partial, slOrderType=Market) instead
-        of a reduce-only limit order — a limit on the active side fills immediately
-        for short positions and is therefore not suitable as a stop-loss.
+        This order rests on the exchange alongside the counter's own TP.  When price
+        reaches the counter's TP level, both orders fill simultaneously — the exchange
+        handles it without a second Pine alert.
+
+        Falls back to counter's take_profit when the close_original block is absent
+        (older Pine versions).
         """
         if self._exchange is None:
             return
@@ -187,41 +207,42 @@ class OrderTracker:
         of_id = counter.get("of_id")
         if not of_id:
             logger.warning(
-                "COUNTER fill has no of_id: order_id=%s — cannot set close_original SL",
+                "COUNTER fill has no of_id: order_id=%s — cannot place close_original",
                 order_id,
             )
             return
 
-        # Resolve SL trigger price from payload block or fall back to counter's TP
-        counter_tp        = counter.get("take_profit")
-        sl_trigger_price: Optional[float] = None
+        # Resolve the limit price from the close_original block or fall back to take_profit
+        sl_limit_price: Optional[float] = None
 
         co_json = counter.get("close_original_json")
         if co_json:
             try:
                 co = json.loads(co_json)
-                raw_tp = co.get("trigger_price")
-                if raw_tp is not None:
-                    sl_trigger_price = float(raw_tp)
+                raw = co.get("price")          # Pine sends "price" for a limit order
+                if raw is not None:
+                    sl_limit_price = float(raw)
             except (json.JSONDecodeError, ValueError, TypeError) as exc:
                 logger.warning(
-                    "close_original_json parse failed for order_id=%s: %s — falling back to take_profit",
+                    "close_original_json parse failed for order_id=%s: %s "
+                    "— falling back to take_profit",
                     order_id, exc,
                 )
 
-        if sl_trigger_price is None:
+        if sl_limit_price is None:
+            counter_tp = counter.get("take_profit")
             if counter_tp is None:
                 logger.error(
-                    "COUNTER fill has no close_original_json and no take_profit: "
-                    "order_id=%s — cannot set SL on original position",
+                    "COUNTER fill has no close_original_json.price and no take_profit: "
+                    "order_id=%s — cannot place close_original",
                     order_id,
                 )
                 return
-            sl_trigger_price = float(counter_tp)
+            sl_limit_price = float(counter_tp)
             logger.warning(
                 "COUNTER fill: no close_original_json, falling back to take_profit=%.5f "
-                "as SL trigger: order_id=%s",
-                sl_trigger_price, order_id,
+                "as close_original price: order_id=%s",
+                sl_limit_price, order_id,
             )
 
         original = get_original_signal_by_of_id_sync(of_id)
@@ -232,38 +253,55 @@ class OrderTracker:
             )
             return
 
-        # Hedge mode: Long original → positionIdx=1; Short original → positionIdx=2
-        orig_action  = original["action"]  # "buy" or "sell"
-        position_idx = 1 if orig_action == "buy" else 2
-
-        try:
-            sl_size = round(float(original["quantity"]), 1)
-        except (TypeError, ValueError):
-            logger.error(
-                "Invalid original quantity for signal id=%s — cannot set SL",
+        if original.get("close_original_order_id"):
+            logger.info(
+                "close_original already placed for original signal id=%s — skipping",
                 original["id"],
             )
             return
-        if sl_size <= 0:
+
+        # Derive close side and hedge-mode positionIdx from original's action.
+        # Pine's close_original.side agrees with this derivation, but we rely on
+        # the DB record rather than the payload to be resilient against format changes.
+        orig_action  = original["action"]      # "buy" (long) or "sell" (short)
+        close_side   = "Sell" if orig_action == "buy" else "Buy"
+        position_idx = 1 if orig_action == "buy" else 2
+
+        try:
+            # Use the counter's actual filled qty for an exact match
+            filled_qty = round(float(order.get("cumExecQty") or original["quantity"]), 1)
+        except (TypeError, ValueError):
+            filled_qty = round(float(original["quantity"]), 1)
+        if filled_qty <= 0:
             return
 
         try:
-            self._exchange.place_partial_sl(
+            result = self._exchange.place_tp_order(
                 symbol=original["symbol"],
+                side=close_side,
+                qty=filled_qty,
+                price=sl_limit_price,
                 position_idx=position_idx,
-                sl_trigger_price=sl_trigger_price,
-                sl_size=sl_size,
                 category=original.get("category", "linear"),
             )
-            logger.info(
-                "Partial SL set on original: signal_id=%s symbol=%s "
-                "positionIdx=%s sl_trigger=%.5f sl_size=%s",
-                original["id"], original["symbol"],
-                position_idx, sl_trigger_price, sl_size,
-            )
+            close_order_id = result.get("order_id", "")
+            if close_order_id:
+                set_close_original_order_id_sync(original["id"], close_order_id)
+                logger.info(
+                    "close_original placed: original_signal_id=%s close_order_id=%s "
+                    "symbol=%s side=%s qty=%s price=%.5f",
+                    original["id"], close_order_id,
+                    original["symbol"], close_side, filled_qty, sl_limit_price,
+                )
+            else:
+                logger.error(
+                    "close_original order returned no orderId: "
+                    "original_signal_id=%s symbol=%s",
+                    original["id"], original["symbol"],
+                )
         except Exception as exc:
             logger.error(
-                "Failed to set Partial SL on original signal_id=%s of_id=%s: %s",
+                "Failed to place close_original for original_signal_id=%s of_id=%s: %s",
                 original["id"], of_id, exc,
             )
 
