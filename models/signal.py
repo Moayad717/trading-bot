@@ -41,6 +41,7 @@ class SignalCreate(BaseModel):
     trigger_price: Optional[float] = None
     pattern_type: Optional[str] = None
     interval: Optional[str] = None
+    of_id: Optional[str] = None
 
     @field_validator("symbol")
     @classmethod

@@ -7,10 +7,13 @@ from pybit.unified_trading import WebSocket
 
 from config import now_local, settings
 from db import (
-    get_tp_info_sync,
+    get_signal_by_order_id_sync,
+    get_original_signal_by_of_id_sync,
     link_auto_tp_sync,
+    mark_close_original_filled_sync,
     mark_entry_filled_sync,
     mark_tp_completed_sync,
+    set_close_original_order_id_sync,
     set_tp_order_id_sync,
     update_order_status_sync,
 )
@@ -29,10 +32,15 @@ def _now_local_iso() -> str:
 class OrderTracker:
     """
     Subscribes to Bybit's private order stream via WebSocket.
-    - Entry fill  → status ACTIVE, entry_fill_time set, reduce-only TP placed, tp_order_id stored.
-    - TP fill     → status COMPLETED, completion_time set.
-    - New reduce-only order → backup tp_order_id link via link_auto_tp_sync.
-    - Cancelled / Rejected / Expired → status FAILED.
+
+    Entry fill  → status ACTIVE, entry_fill_time set, TP placed, tp_order_id stored.
+                  For COUNTER entries: also places a limit close on the original position
+                  at the counter's TP price (dynamic SL) and stores close_original_order_id.
+    TP fill     → status COMPLETED, completion_time set.
+    close_original fill → original signal COMPLETED, completion_time set.
+    New reduce-only order → backup tp_order_id link via link_auto_tp_sync.
+    Cancelled / Rejected / Expired → status FAILED.
+
     Runs in its own thread managed by pybit — safe to start/stop from asyncio lifespan.
     """
 
@@ -89,6 +97,7 @@ class OrderTracker:
         order_id  = order.get("orderId", "")
         fill_time = _now_local_iso()
 
+        # ── 1. Entry fill ──────────────────────────────────────────────────────
         was_entry = mark_entry_filled_sync(order_id, fill_time)
         if was_entry:
             logger.info(
@@ -96,8 +105,20 @@ class OrderTracker:
                 order_id, order.get("symbol"),
             )
             self._maybe_place_tp(order)
+            # For COUNTER entries: also place a limit close on the original position
+            self._maybe_place_close_original(order)
             return
 
+        # ── 2. close_original fill (dynamic SL on the original position) ───────
+        was_close_original = mark_close_original_filled_sync(order_id, fill_time)
+        if was_close_original:
+            logger.info(
+                "close_original filled → original position closed: order_id=%s symbol=%s",
+                order_id, order.get("symbol"),
+            )
+            return
+
+        # ── 3. Regular TP fill ─────────────────────────────────────────────────
         was_tp = mark_tp_completed_sync(order_id, fill_time)
         if was_tp:
             logger.info(
@@ -110,7 +131,7 @@ class OrderTracker:
             return
 
         order_id = order.get("orderId", "")
-        info     = get_tp_info_sync(order_id)
+        info     = get_signal_by_order_id_sync(order_id)
         if not info or info.get("take_profit") is None:
             return
 
@@ -145,6 +166,96 @@ class OrderTracker:
         except Exception as exc:
             logger.error("Failed to place TP for order_id=%s: %s", order_id, exc)
 
+    def _maybe_place_close_original(self, order: Dict[str, Any]) -> None:
+        """When a COUNTER entry fills, place a limit close on the original position.
+
+        The close price equals the counter's TP (the dynamic SL level).
+        This order is stored as close_original_order_id on the original signal row.
+        """
+        if self._exchange is None:
+            return
+
+        order_id = order.get("orderId", "")
+        counter  = get_signal_by_order_id_sync(order_id)
+        if counter is None:
+            return
+
+        if (counter.get("pattern_type") or "").upper() != "COUNTER":
+            return
+
+        of_id = counter.get("of_id")
+        if not of_id:
+            logger.warning(
+                "COUNTER fill has no of_id: order_id=%s — cannot place close_original",
+                order_id,
+            )
+            return
+
+        counter_tp = counter.get("take_profit")
+        if counter_tp is None:
+            logger.warning(
+                "COUNTER fill has no take_profit: order_id=%s — cannot place close_original",
+                order_id,
+            )
+            return
+
+        original = get_original_signal_by_of_id_sync(of_id)
+        if not original:
+            logger.warning(
+                "COUNTER fill: no active original signal for of_id=%s order_id=%s",
+                of_id, order_id,
+            )
+            return
+
+        if original.get("close_original_order_id"):
+            logger.info(
+                "close_original already set for original signal id=%s — skipping",
+                original["id"],
+            )
+            return
+
+        # Hedge mode: original Buy position → close with Sell (positionIdx=1)
+        #             original Sell position → close with Buy  (positionIdx=2)
+        orig_action  = original["action"]  # "buy" or "sell"
+        close_side   = "Sell" if orig_action == "buy" else "Buy"
+        position_idx = 1 if orig_action == "buy" else 2
+
+        try:
+            filled_qty = round(float(order.get("cumExecQty") or original["quantity"]), 1)
+        except (TypeError, ValueError):
+            filled_qty = round(float(original["quantity"]), 1)
+        if filled_qty <= 0:
+            return
+
+        try:
+            result = self._exchange.place_tp_order(
+                symbol=original["symbol"],
+                side=close_side,
+                qty=filled_qty,
+                price=float(counter_tp),
+                position_idx=position_idx,
+                category=original.get("category", "linear"),
+            )
+            close_order_id = result.get("order_id", "")
+            if close_order_id:
+                set_close_original_order_id_sync(original["id"], close_order_id)
+                logger.info(
+                    "close_original placed: original_signal_id=%s close_order_id=%s "
+                    "symbol=%s side=%s qty=%s price=%s",
+                    original["id"], close_order_id,
+                    original["symbol"], close_side, filled_qty, counter_tp,
+                )
+            else:
+                logger.error(
+                    "close_original order returned no orderId: original_signal_id=%s symbol=%s",
+                    original["id"], original["symbol"],
+                )
+        except Exception as exc:
+            logger.error(
+                "Failed to place close_original for original_signal_id=%s of_id=%s: %s",
+                original["id"], of_id, exc,
+            )
+
     def _handle_auto_tp_created(self, order: Dict[str, Any]) -> None:
         symbol      = order.get("symbol", "")
         tp_order_id = order.get("orderId", "")
@@ -169,4 +280,3 @@ class OrderTracker:
             "Auto-TP link result: linked=%s symbol=%s action=%s qty=%s",
             linked, symbol, action, qty,
         )
-

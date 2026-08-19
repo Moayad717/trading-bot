@@ -12,6 +12,9 @@ from fastapi import APIRouter, HTTPException, Request, status
 
 from config import now_local, settings
 from db import (
+    clear_close_original_order_id_sync,
+    get_counter_signal_by_of_id_sync,
+    get_original_signal_by_of_id_sync,
     insert_signal_sync,
     mark_market_order_filled_sync,
     set_tp_order_id_sync,
@@ -253,6 +256,158 @@ def _verify_secret(request: Request) -> None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid webhook secret")
 
 
+def _handle_exit_position_sync(payload: dict, exchange: Any) -> None:
+    """Handle exit_position alerts from Pine.
+
+    STD_DYNAMIC_SL — counter's TP hit, which is the original's dynamic SL.
+        The close_original limit order placed at counter-TP should auto-fill
+        through the WS. As a safety measure we cancel the original's regular TP
+        order to prevent a conflicting reduce-only from staying open.
+
+    STD_TP_COUNTER_STILL_OPEN — original reached its own TP naturally while the
+        counter was still alive.
+        1. Cancel close_original order (dynamic SL no longer needed).
+        2. Cancel counter's TP order.
+        3. Close counter position at market.
+    """
+    try:
+        of_id  = payload.get("id", "")
+        reason = payload.get("reason", "")
+        if not of_id:
+            logger.warning("exit_position alert missing 'id' field — ignoring")
+            return
+
+        original = get_original_signal_by_of_id_sync(of_id)
+        counter  = get_counter_signal_by_of_id_sync(of_id)
+
+        if reason == "STD_DYNAMIC_SL":
+            # Counter TP filled → close_original should auto-fill via WS.
+            # Cancel original's TP so there is no conflicting reduce-only.
+            if original and original.get("tp_order_id"):
+                try:
+                    exchange.cancel_order(original["tp_order_id"], original["symbol"])
+                    logger.info(
+                        "exit_position/STD_DYNAMIC_SL: cancelled original TP order_id=%s symbol=%s",
+                        original["tp_order_id"], original["symbol"],
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "exit_position/STD_DYNAMIC_SL: cancel original TP failed (may already be gone): %s",
+                        exc,
+                    )
+
+        elif reason == "STD_TP_COUNTER_STILL_OPEN":
+            # Original TP hit naturally — cancel close_original, close counter.
+            if original and original.get("close_original_order_id"):
+                try:
+                    exchange.cancel_order(
+                        original["close_original_order_id"], original["symbol"]
+                    )
+                    clear_close_original_order_id_sync(original["id"])
+                    logger.info(
+                        "exit_position/STD_TP_COUNTER_STILL_OPEN: cancelled close_original "
+                        "order_id=%s symbol=%s",
+                        original["close_original_order_id"], original["symbol"],
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "exit_position/STD_TP_COUNTER_STILL_OPEN: cancel close_original failed: %s",
+                        exc,
+                    )
+
+            if counter:
+                ctr_action   = counter["action"]  # "buy" or "sell"
+                close_side   = "Sell" if ctr_action == "buy" else "Buy"
+                position_idx = 1 if ctr_action == "buy" else 2
+
+                if counter.get("tp_order_id"):
+                    try:
+                        exchange.cancel_order(counter["tp_order_id"], counter["symbol"])
+                        logger.info(
+                            "exit_position/STD_TP_COUNTER_STILL_OPEN: cancelled counter TP "
+                            "order_id=%s symbol=%s",
+                            counter["tp_order_id"], counter["symbol"],
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "exit_position/STD_TP_COUNTER_STILL_OPEN: cancel counter TP failed: %s",
+                            exc,
+                        )
+
+                try:
+                    qty = round(float(counter.get("quantity") or 0), 1)
+                    if qty > 0:
+                        exchange.place_market_close_order(
+                            symbol=counter["symbol"],
+                            side=close_side,
+                            qty=qty,
+                            position_idx=position_idx,
+                            category=counter.get("category", "linear"),
+                        )
+                        logger.info(
+                            "exit_position/STD_TP_COUNTER_STILL_OPEN: market-closed counter "
+                            "symbol=%s side=%s qty=%s",
+                            counter["symbol"], close_side, qty,
+                        )
+                except Exception as exc:
+                    logger.error(
+                        "exit_position/STD_TP_COUNTER_STILL_OPEN: market close counter failed: %s",
+                        exc,
+                    )
+
+        else:
+            logger.warning("exit_position: unrecognised reason=%r of_id=%s — no action taken", reason, of_id)
+
+    except Exception as exc:
+        logger.error("Unexpected error in _handle_exit_position_sync: %s", exc)
+
+
+def _handle_cancel_close_original_sync(payload: dict, exchange: Any) -> None:
+    """Handle cancel_close_original alerts.
+
+    Cancels the dynamic-SL limit order placed on the original position and
+    clears the stored order ID so it is not re-used.
+    """
+    try:
+        of_id = payload.get("id", "")
+        if not of_id:
+            logger.warning("cancel_close_original alert missing 'id' field — ignoring")
+            return
+
+        original = get_original_signal_by_of_id_sync(of_id)
+        if not original:
+            logger.warning(
+                "cancel_close_original: no active original signal for of_id=%s", of_id
+            )
+            return
+
+        close_oid = original.get("close_original_order_id")
+        if not close_oid:
+            logger.info(
+                "cancel_close_original: no close_original_order_id on original signal id=%s "
+                "(may have already been cancelled or filled)",
+                original["id"],
+            )
+            return
+
+        try:
+            exchange.cancel_order(close_oid, original["symbol"])
+            clear_close_original_order_id_sync(original["id"])
+            logger.info(
+                "cancel_close_original: cancelled order_id=%s symbol=%s original_signal_id=%s",
+                close_oid, original["symbol"], original["id"],
+            )
+        except Exception as exc:
+            logger.warning(
+                "cancel_close_original: Bybit cancel failed (order may already be gone): %s", exc
+            )
+            # Still clear the DB field so stale IDs don't block future calls.
+            clear_close_original_order_id_sync(original["id"])
+
+    except Exception as exc:
+        logger.error("Unexpected error in _handle_cancel_close_original_sync: %s", exc)
+
+
 def _place_order_sync(signal_create: Any, exchange: Any) -> None:
     """Runs in a thread-pool executor after the 200 OK is returned to TradingView.
 
@@ -361,6 +516,23 @@ async def tradingview_webhook(request: Request) -> Dict[str, Any]:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Request body must be valid JSON")
 
     dry_run: bool = bool(payload.get("dry_run", False))
+
+    # ── Special action types that bypass the normal parse/order path ──────────
+    raw_action = str(payload.get("action", "")).strip().lower()
+
+    if raw_action == "exit_position":
+        exchange = _get_exchange()
+        asyncio.get_event_loop().run_in_executor(
+            None, _handle_exit_position_sync, payload, exchange
+        )
+        return {"status": "received", "action": "exit_position"}
+
+    if raw_action == "cancel_close_original":
+        exchange = _get_exchange()
+        asyncio.get_event_loop().run_in_executor(
+            None, _handle_cancel_close_original_sync, payload, exchange
+        )
+        return {"status": "received", "action": "cancel_close_original"}
 
     try:
         signal_create = tv_parser.parse(payload)

@@ -35,9 +35,11 @@ _MIGRATIONS = [
     ("trigger_price",   "REAL"),
     ("pattern_type",    "TEXT"),
     ("tp_order_id",     "TEXT"),
-    ("entry_fill_time", "DATETIME"),
-    ("completion_time", "DATETIME"),
-    ("interval",        "TEXT"),
+    ("entry_fill_time",           "DATETIME"),
+    ("completion_time",           "DATETIME"),
+    ("interval",                  "TEXT"),
+    ("of_id",                     "TEXT"),
+    ("close_original_order_id",   "TEXT"),
 ]
 
 
@@ -100,8 +102,8 @@ async def _insert_signal_impl(signal: Signal) -> int:
             INSERT INTO signals
                 (timestamp, action, symbol, quantity, price, order_type, category,
                  status, exchange, order_id, source, error_message, stop_loss, take_profit,
-                 trigger_price, pattern_type, interval)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 trigger_price, pattern_type, interval, of_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 signal.timestamp.isoformat(),
@@ -121,6 +123,7 @@ async def _insert_signal_impl(signal: Signal) -> int:
                 signal.trigger_price,
                 signal.pattern_type,
                 signal.interval,
+                signal.of_id,
             ),
         )
         await db.commit()
@@ -254,8 +257,8 @@ def insert_signal_sync(signal: Signal) -> int:
             INSERT INTO signals
                 (timestamp, action, symbol, quantity, price, order_type, category,
                  status, exchange, order_id, source, error_message, stop_loss, take_profit,
-                 trigger_price, pattern_type, interval)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 trigger_price, pattern_type, interval, of_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 signal.timestamp.isoformat(),
@@ -275,6 +278,7 @@ def insert_signal_sync(signal: Signal) -> int:
                 signal.trigger_price,
                 signal.pattern_type,
                 signal.interval,
+                signal.of_id,
             ),
         )
         conn.commit()
@@ -320,6 +324,99 @@ def get_tp_info_sync(order_id: str) -> Optional[dict]:
     if row is None:
         return None
     return {"take_profit": row[0], "symbol": row[1], "action": row[2], "category": row[3]}
+
+
+def get_signal_by_order_id_sync(order_id: str) -> Optional[dict]:
+    """Return full signal data for a filled entry order. Used by order_tracker."""
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
+        cur = conn.execute(
+            """SELECT id, take_profit, symbol, action, category,
+                      pattern_type, of_id, quantity, close_original_order_id
+               FROM signals WHERE order_id = ?""",
+            (order_id,),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return None
+    return {
+        "id":                      row[0],
+        "take_profit":             row[1],
+        "symbol":                  row[2],
+        "action":                  row[3],
+        "category":                row[4],
+        "pattern_type":            row[5],
+        "of_id":                   row[6],
+        "quantity":                row[7],
+        "close_original_order_id": row[8],
+    }
+
+
+def get_original_signal_by_of_id_sync(of_id: str) -> Optional[dict]:
+    """Return the active original (non-COUNTER) signal that owns this Pine ID."""
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.execute(
+            """SELECT id, order_id, symbol, action, quantity,
+                      take_profit, tp_order_id, category, close_original_order_id
+               FROM signals
+               WHERE of_id = ?
+                 AND (pattern_type IS NULL OR pattern_type != 'COUNTER')
+                 AND status = 'active'
+               LIMIT 1""",
+            (of_id,),
+        )
+        row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def get_counter_signal_by_of_id_sync(of_id: str) -> Optional[dict]:
+    """Return the COUNTER signal linked to this Pine ID."""
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.execute(
+            """SELECT id, order_id, symbol, action, quantity,
+                      take_profit, tp_order_id, category
+               FROM signals
+               WHERE of_id = ? AND pattern_type = 'COUNTER'
+                 AND status IN ('open', 'active')
+               LIMIT 1""",
+            (of_id,),
+        )
+        row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def set_close_original_order_id_sync(signal_id: int, close_order_id: str) -> None:
+    """Store the order_id of the limit close placed on the original position."""
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
+        conn.execute(
+            "UPDATE signals SET close_original_order_id = ? WHERE id = ?",
+            (close_order_id, signal_id),
+        )
+        conn.commit()
+
+
+def clear_close_original_order_id_sync(signal_id: int) -> None:
+    """Null out close_original_order_id after it has been cancelled."""
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
+        conn.execute(
+            "UPDATE signals SET close_original_order_id = NULL WHERE id = ?",
+            (signal_id,),
+        )
+        conn.commit()
+
+
+def mark_close_original_filled_sync(close_original_order_id: str, fill_time: str) -> bool:
+    """Transition original signal ACTIVE → COMPLETED when its close_original order fills."""
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
+        cur = conn.execute(
+            """UPDATE signals
+                  SET status='completed', completion_time=?
+                WHERE close_original_order_id = ? AND status = 'active'""",
+            (fill_time, close_original_order_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
 
 
 def link_auto_tp_sync(symbol: str, action: str, qty: float, tp_order_id: str) -> bool:

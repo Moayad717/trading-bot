@@ -81,6 +81,33 @@ class BybitExchange(BaseExchange):
             "raw": response,
         }
 
+    def place_market_close_order(
+        self,
+        symbol: str,
+        side: str,
+        qty: float,
+        position_idx: int,
+        category: str = "linear",
+    ) -> Dict[str, Any]:
+        """Place a reduce-only Market order to close an open position immediately."""
+        params: Dict[str, Any] = {
+            "category": category,
+            "symbol": symbol,
+            "side": side,
+            "orderType": "Market",
+            "qty": str(qty),
+            "reduceOnly": True,
+            "positionIdx": position_idx,
+        }
+        response: Any = self._client.place_order(**params)
+        self._raise_for_error(response)
+        result = response.get("result", {})
+        return {
+            "order_id": result.get("orderId", ""),
+            "status": result.get("orderStatus", ""),
+            "raw": response,
+        }
+
     def get_execution_history(
         self, symbol: str = "", category: str = "linear", limit: int = 200
     ) -> List[Dict[str, Any]]:

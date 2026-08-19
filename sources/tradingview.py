@@ -19,6 +19,7 @@ _TAKE_PROFIT_KEYS   = ("take_profit", "tp", "target", "takeprofit")
 _TRIGGER_PRICE_KEYS = ("trigger_price", "trigger")
 _PATTERN_TYPE_KEYS  = ("pattern", "pattern_type", "rule_type", "rule")
 _INTERVAL_KEYS      = ("interval",)
+_OF_ID_KEYS         = ("id",)
 
 _BUY_ALIASES  = {"buy", "long", "bull", "bullish", "1", "entry_long", "enter_long"}
 _SELL_ALIASES = {"sell", "short", "bear", "bearish", "-1", "entry_short", "enter_short"}
@@ -120,6 +121,12 @@ def parse(payload: Dict[str, Any]) -> SignalCreate:
     raw_interval = _find(payload, _INTERVAL_KEYS)
     interval: Optional[str] = str(raw_interval).strip() if raw_interval is not None else None
 
+    # of_id — the Pine deterministic ID from the "id" field.
+    # For original RIOT signals this is the signal's own Pine ID.
+    # For COUNTER signals this is the original signal's Pine ID (same value links them).
+    raw_of_id = _find(payload, _OF_ID_KEYS)
+    of_id: Optional[str] = str(raw_of_id).strip() if raw_of_id is not None else None
+
     # Stop loss — flat fields only
     stop_loss = _to_float(_find(payload, _STOP_LOSS_KEYS), "stop_loss")
 
@@ -161,4 +168,5 @@ def parse(payload: Dict[str, Any]) -> SignalCreate:
         trigger_price=trigger_price,
         pattern_type=pattern_type,
         interval=interval,
+        of_id=of_id,
     )
