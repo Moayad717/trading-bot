@@ -97,13 +97,14 @@ class BybitExchange(BaseExchange):
         (which would be on the active side and fill at once for a short position).
         """
         params: Dict[str, Any] = {
-            "category":       category,
-            "symbol":         symbol,
-            "tpslMode":       "Partial",
-            "slSize":         str(sl_size),
-            "slTriggerPrice": str(sl_trigger_price),
-            "slOrderType":    "Market",
-            "positionIdx":    position_idx,
+            "category":    category,
+            "symbol":      symbol,
+            "tpslMode":    "Partial",
+            "slSize":      str(sl_size),
+            "stopLoss":    str(sl_trigger_price),   # Bybit v5 field (not slTriggerPrice)
+            "slTriggerBy": "LastPrice",
+            "slOrderType": "Market",
+            "positionIdx": position_idx,
         }
         response: Any = self._client.set_trading_stop(**params)
         self._raise_for_error(response)
@@ -120,6 +121,7 @@ class BybitExchange(BaseExchange):
             "category":    category,
             "symbol":      symbol,
             "tpslMode":    "Partial",
+            "stopLoss":    "0",   # clears the stop price; slSize alone is not enough
             "slSize":      "0",
             "positionIdx": position_idx,
         }
