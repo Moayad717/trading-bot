@@ -13,7 +13,6 @@ from fastapi import APIRouter, HTTPException, Request, status
 from config import now_local, settings
 from config import now_local as _now_local
 from db import (
-    clear_close_original_order_id_sync,
     complete_signal_by_id_sync,
     get_counter_signal_by_of_id_sync,
     get_original_signal_by_of_id_sync,
@@ -395,13 +394,15 @@ def _handle_exit_position_sync(payload: dict, exchange: Any) -> None:
 def _handle_cancel_close_original_sync(payload: dict, exchange: Any) -> None:
     """Handle cancel_close_original alerts from Pine.
 
-    Fired when the ORIGINAL signal reaches its own TP while a close_original
-    reduce-only limit order is still resting on the exchange.  The bot must
-    cancel that order so it is not matched later when it is no longer wanted.
+    Fired when the ORIGINAL reaches its own TP while a Partial stop-loss set via
+    set_trading_stop is still attached to that position.  The original's position
+    is now closing on its TP, so the orphaned SL must be removed to avoid a
+    spurious partial-close later.
 
-    Bybit auto-cancels reduce-only orders when the position that funded them is
-    closed, so the cancel call may fail if Bybit already removed it.  That is
-    harmless — we still clear the stored order_id from the DB.
+    set_trading_stop has no separate order_id; cancellation is done by calling
+    set_trading_stop again with slSize=0 (cancel_partial_sl).  Bybit may have
+    already removed it when the position closed — that's fine, the call is
+    idempotent and any error is logged without raising.
     """
     try:
         of_id = payload.get("id", "")
@@ -416,31 +417,26 @@ def _handle_cancel_close_original_sync(payload: dict, exchange: Any) -> None:
             )
             return
 
-        close_oid = original.get("close_original_order_id")
-        if not close_oid:
-            # Counter never filled (ARMED only) → no close_original order was placed
-            logger.info(
-                "cancel_close_original: no close_original_order_id on signal id=%s "
-                "(counter may not have filled yet, or order already gone)",
-                original["id"],
-            )
-            return
+        orig_action  = original["action"]
+        position_idx = 1 if orig_action == "buy" else 2
 
         try:
-            exchange.cancel_order(close_oid, original["symbol"])
+            exchange.cancel_partial_sl(
+                symbol=original["symbol"],
+                position_idx=position_idx,
+                category=original.get("category", "linear"),
+            )
             logger.info(
-                "cancel_close_original: cancelled order_id=%s symbol=%s original_signal_id=%s",
-                close_oid, original["symbol"], original["id"],
+                "cancel_close_original: Partial SL removed from original "
+                "signal_id=%s symbol=%s position_idx=%s",
+                original["id"], original["symbol"], position_idx,
             )
         except Exception as exc:
-            # Order may already be cancelled/filled by Bybit — that's fine.
+            # Position may already be flat — SL auto-removed, no action needed.
             logger.warning(
-                "cancel_close_original: Bybit cancel_order failed "
-                "(order may have been auto-cancelled or already filled): %s", exc,
+                "cancel_close_original: cancel_partial_sl failed "
+                "(position may already be closed, SL auto-removed): %s", exc,
             )
-        finally:
-            # Always clear the stored ID so stale values don't block future calls.
-            clear_close_original_order_id_sync(original["id"])
 
     except Exception as exc:
         logger.error("Unexpected error in _handle_cancel_close_original_sync: %s", exc)

@@ -329,6 +329,20 @@ def get_tp_info_sync(order_id: str) -> Optional[dict]:
     return {"take_profit": row[0], "symbol": row[1], "action": row[2], "category": row[3]}
 
 
+def get_signal_by_tp_order_id_sync(tp_order_id: str) -> Optional[dict]:
+    """Return the signal whose tp_order_id matches. Used by order_tracker to detect
+    COUNTER TP fills so the original can be marked COMPLETED (partial SL fired)."""
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
+        cur = conn.execute(
+            "SELECT id, pattern_type, of_id FROM signals WHERE tp_order_id = ? LIMIT 1",
+            (tp_order_id,),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return None
+    return {"id": row[0], "pattern_type": row[1], "of_id": row[2]}
+
+
 def get_signal_by_order_id_sync(order_id: str) -> Optional[dict]:
     """Return full signal data for a filled entry order. Used by order_tracker."""
     with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
