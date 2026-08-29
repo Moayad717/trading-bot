@@ -385,6 +385,21 @@ def get_signal_by_order_id_sync(order_id: str) -> Optional[dict]:
     }
 
 
+def original_of_id_known_sync(of_id: str) -> bool:
+    """Return True if the DB contains any non-COUNTER signal with this of_id,
+    regardless of status.  Used to distinguish history-replay counters (of_id
+    never seen) from late counters against a completed original."""
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
+        cur = conn.execute(
+            """SELECT 1 FROM signals
+               WHERE of_id = ?
+                 AND (pattern_type IS NULL OR pattern_type != 'COUNTER')
+               LIMIT 1""",
+            (of_id,),
+        )
+        return cur.fetchone() is not None
+
+
 def get_original_signal_by_of_id_sync(of_id: str) -> Optional[dict]:
     """Return the active original (non-COUNTER) signal that owns this Pine ID."""
     with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:

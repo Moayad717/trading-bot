@@ -18,6 +18,7 @@ from db import (
     get_original_signal_by_of_id_sync,
     insert_signal_sync,
     mark_market_order_filled_sync,
+    original_of_id_known_sync,
     set_tp_order_id_sync,
     update_signal_status_sync,
 )
@@ -451,9 +452,8 @@ def _place_order_sync(signal_create: Any, exchange: Any) -> None:
     """
     try:
         # ── COUNTER guard — must run before ANY exchange call ─────────────────
-        # If the original signal is not active in our DB, refuse to open the
-        # counter position.  An unhedged counter (no original to close) would be
-        # an unmanaged directional trade.
+        # Reject if the original is not active. Three distinct rejection cases
+        # produce separate log messages so history-replay noise is easy to spot.
         if (signal_create.pattern_type or "").upper() == "COUNTER":
             of_id = signal_create.of_id or ""
             if not of_id:
@@ -463,14 +463,29 @@ def _place_order_sync(signal_create: Any, exchange: Any) -> None:
                     signal_create.symbol,
                 )
                 return
+
             original = get_original_signal_by_of_id_sync(of_id)
             if not original:
-                logger.error(
-                    "COUNTER order REJECTED — no active original signal found for "
-                    "of_id=%s symbol=%s. Refusing to open unhedged counter position.",
-                    of_id, signal_create.symbol,
-                )
+                if original_of_id_known_sync(of_id):
+                    # Original existed but is no longer active (completed/failed).
+                    # Per spec 6.5: counter is only valid while original is open.
+                    logger.error(
+                        "COUNTER order REJECTED — original for of_id=%s is no longer "
+                        "active (completed or failed): symbol=%s. "
+                        "Refusing to open unhedged counter position.",
+                        of_id, signal_create.symbol,
+                    )
+                else:
+                    # of_id has NO record in DB — TradingView replayed history and
+                    # armed a counter for an order flow the bot never received.
+                    logger.error(
+                        "COUNTER order REJECTED — of_id=%s has no record in DB "
+                        "(likely a TradingView history-replay counter): symbol=%s. "
+                        "Refusing to open unhedged counter position.",
+                        of_id, signal_create.symbol,
+                    )
                 return
+
             logger.info(
                 "COUNTER guard passed: of_id=%s original_signal_id=%s symbol=%s",
                 of_id, original["id"], signal_create.symbol,
