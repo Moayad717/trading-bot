@@ -113,7 +113,9 @@ def parse(payload: Dict[str, Any]) -> SignalCreate:
     if is_notional:
         base_price = price if price is not None else trigger_price
         if base_price:
-            quantity = round(quantity / base_price, 1)
+            # Keep full precision here — rounding to qtyStep happens in the exchange
+            # layer (bybit.py:round_qty) which knows each symbol's actual step size.
+            quantity = quantity / base_price
         else:
             raise ValueError("Cannot convert notional amount: no price or trigger_price available")
     raw_pattern = _find(payload, _PATTERN_TYPE_KEYS)

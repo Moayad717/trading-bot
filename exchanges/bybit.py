@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+from decimal import ROUND_DOWN, Decimal
 from typing import Any, Dict, List
 
 from pybit.unified_trading import HTTP
@@ -7,6 +9,12 @@ from pybit.unified_trading import HTTP
 from config import settings
 from exchanges.base import BaseExchange
 from models.signal import Action, OrderType, SignalCreate
+
+logger = logging.getLogger(__name__)
+
+# Module-level cache shared across all BybitExchange instances.
+# Maps "category:symbol" → qtyStep string e.g. "0.001".
+_qty_step_cache: Dict[str, str] = {}
 
 
 class BybitExchange(BaseExchange):
@@ -21,15 +29,42 @@ class BybitExchange(BaseExchange):
     def name(self) -> str:
         return "bybit"
 
+    def _get_qty_step(self, symbol: str, category: str = "linear") -> str:
+        """Fetch the qtyStep for a symbol from Bybit and cache it.
+        Falls back to '0.001' (3 dp, conservative) on any error."""
+        key = f"{category}:{symbol}"
+        if key in _qty_step_cache:
+            return _qty_step_cache[key]
+        try:
+            response: Any = self._client.get_instruments_info(category=category, symbol=symbol)
+            items = response.get("result", {}).get("list", [])
+            if items:
+                step = str(items[0].get("lotSizeFilter", {}).get("qtyStep", "0.001"))
+                _qty_step_cache[key] = step
+                logger.info("qtyStep cached: symbol=%s step=%s", symbol, step)
+                return step
+        except Exception as exc:
+            logger.warning("Could not fetch qtyStep for %s — defaulting to 0.001: %s", symbol, exc)
+        _qty_step_cache[key] = "0.001"
+        return "0.001"
+
+    def round_qty(self, qty: float, symbol: str, category: str = "linear") -> float:
+        """Round qty DOWN to the nearest qtyStep for the given symbol."""
+        step = self._get_qty_step(symbol, category)
+        step_d = Decimal(step)
+        qty_d  = Decimal(str(qty)).quantize(step_d, rounding=ROUND_DOWN)
+        return float(qty_d)
+
     def place_order(self, signal: SignalCreate) -> Dict[str, Any]:
         side = "Buy" if signal.action == Action.BUY else "Sell"
+        qty  = self.round_qty(signal.quantity, signal.symbol, signal.category)
 
         params: Dict[str, Any] = {
             "category": signal.category,
             "symbol": signal.symbol,
             "side": side,
             "orderType": signal.order_type.value.capitalize(),
-            "qty": str(signal.quantity),
+            "qty": str(qty),
             "positionIdx": 1 if side == "Buy" else 2,
         }
 

@@ -142,10 +142,12 @@ class OrderTracker:
         position_idx  = 1 if original_side == "Buy" else 2
 
         try:
-            filled_qty = round(float(order.get("cumExecQty") or 0), 1)
+            raw_filled = float(order.get("cumExecQty") or 0)
         except (TypeError, ValueError):
             logger.warning("Invalid cumExecQty in fill event for order_id=%s", order_id)
             return
+        category    = info.get("category", "linear")
+        filled_qty  = self._exchange.round_qty(raw_filled, info["symbol"], category)
         if filled_qty <= 0:
             return
 
@@ -249,9 +251,12 @@ class OrderTracker:
         position_idx = 1 if orig_action == "buy" else 2
 
         try:
-            # Use the original's quantity — the SL covers the original position's size,
-            # not the counter's fill qty.
-            sl_size = round(float(original["quantity"]), 1)
+            # Use the original's quantity rounded to its symbol's qtyStep.
+            # The SL covers the original position's size, not the counter's fill qty.
+            raw_sl_size = float(original["quantity"])
+            sl_size = self._exchange.round_qty(
+                raw_sl_size, original["symbol"], original.get("category", "linear")
+            )
         except (TypeError, ValueError):
             logger.error(
                 "COUNTER fill: invalid original quantity for of_id=%s — cannot size SL",
