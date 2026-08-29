@@ -41,6 +41,7 @@ _MIGRATIONS = [
     ("of_id",                     "TEXT"),
     ("close_original_order_id",   "TEXT"),
     ("close_original_json",       "TEXT"),
+    ("sl_placed",                 "INTEGER"),  # 1=placed, 0=not placed, NULL=legacy
 ]
 
 
@@ -334,13 +335,27 @@ def get_signal_by_tp_order_id_sync(tp_order_id: str) -> Optional[dict]:
     COUNTER TP fills so the original can be marked COMPLETED (partial SL fired)."""
     with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
         cur = conn.execute(
-            "SELECT id, pattern_type, of_id FROM signals WHERE tp_order_id = ? LIMIT 1",
+            "SELECT id, pattern_type, of_id, sl_placed FROM signals WHERE tp_order_id = ? LIMIT 1",
             (tp_order_id,),
         )
         row = cur.fetchone()
     if row is None:
         return None
-    return {"id": row[0], "pattern_type": row[1], "of_id": row[2]}
+    return {"id": row[0], "pattern_type": row[1], "of_id": row[2], "sl_placed": row[3]}
+
+
+def set_sl_placed_sync(signal_id: int, placed: bool) -> None:
+    """Record whether the partial SL was successfully placed for a COUNTER signal.
+    placed=True  → sl_placed=1 (SL is live on the exchange)
+    placed=False → sl_placed=0 (original was already closed, or API failed after retry)
+    NULL (never called) → legacy counter: unknown, treated as placed for back-compat.
+    """
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
+        conn.execute(
+            "UPDATE signals SET sl_placed = ? WHERE id = ?",
+            (1 if placed else 0, signal_id),
+        )
+        conn.commit()
 
 
 def get_signal_by_order_id_sync(order_id: str) -> Optional[dict]:

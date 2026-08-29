@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from pybit.unified_trading import WebSocket
@@ -15,6 +16,7 @@ from db import (
     link_auto_tp_sync,
     mark_entry_filled_sync,
     mark_tp_completed_sync,
+    set_sl_placed_sync,
     set_tp_order_id_sync,
     update_order_status_sync,
 )
@@ -259,24 +261,99 @@ class OrderTracker:
         if sl_size <= 0:
             return
 
-        try:
-            self._exchange.place_partial_sl(
-                symbol=original["symbol"],
-                position_idx=position_idx,
-                sl_trigger_price=sl_trigger,
-                sl_size=sl_size,
-                category=original.get("category", "linear"),
-            )
-            logger.info(
-                "close_original partial SL set: original_signal_id=%s "
-                "symbol=%s position_idx=%s sl_trigger=%.5f sl_size=%s",
-                original["id"], original["symbol"], position_idx, sl_trigger, sl_size,
-            )
-        except Exception as exc:
-            logger.error(
-                "Failed to set close_original partial SL for original_signal_id=%s of_id=%s: %s",
-                original["id"], of_id, exc,
-            )
+        self._place_partial_sl_with_retry(
+            counter=counter,
+            original=original,
+            position_idx=position_idx,
+            sl_trigger=sl_trigger,
+            sl_size=sl_size,
+            of_id=of_id,
+        )
+
+    def _place_partial_sl_with_retry(
+        self,
+        counter: dict,
+        original: dict,
+        position_idx: int,
+        sl_trigger: float,
+        sl_size: float,
+        of_id: str,
+    ) -> None:
+        """Place the partial SL for the original position, retrying once on transient errors.
+
+        Case A — Bybit returns "zero position": the original closed before the counter
+        filled. Per spec 6.5 this is legitimate. Log INFO and mark sl_placed=0 so the
+        original is NOT marked COMPLETED via the counter's TP fill path.
+
+        Case B — any other error: retry once after 2 s. If the retry also fails, log
+        CRITICAL so the operator knows a counter is live with no stop on its original.
+        Mark sl_placed=0 in both failure outcomes.
+        """
+        for attempt in range(1, 3):
+            try:
+                self._exchange.place_partial_sl(
+                    symbol=original["symbol"],
+                    position_idx=position_idx,
+                    sl_trigger_price=sl_trigger,
+                    sl_size=sl_size,
+                    category=original.get("category", "linear"),
+                )
+                # ── Success ──────────────────────────────────────────────────
+                set_sl_placed_sync(counter["id"], placed=True)
+                logger.info(
+                    "close_original partial SL set: original_signal_id=%s "
+                    "symbol=%s position_idx=%s sl_trigger=%.5f sl_size=%s",
+                    original["id"], original["symbol"], position_idx, sl_trigger, sl_size,
+                )
+                return
+            except RuntimeError as exc:
+                if "zero position" in str(exc).lower():
+                    # ── Case A ───────────────────────────────────────────────
+                    # Original is already flat. Counter runs alone to its TP.
+                    set_sl_placed_sync(counter["id"], placed=False)
+                    logger.info(
+                        "close_original: original position already closed before counter "
+                        "entry filled (original_signal_id=%s of_id=%s) — "
+                        "counter runs unpaired, no SL needed (spec 6.5)",
+                        original["id"], of_id,
+                    )
+                    return
+                # ── Case B, attempt 1 ────────────────────────────────────────
+                if attempt == 1:
+                    logger.warning(
+                        "close_original partial SL failed (attempt 1/2): "
+                        "original_signal_id=%s of_id=%s: %s — retrying in 2s",
+                        original["id"], of_id, exc,
+                    )
+                    time.sleep(2)
+                else:
+                    # ── Case B, attempt 2 — give up ──────────────────────────
+                    set_sl_placed_sync(counter["id"], placed=False)
+                    logger.critical(
+                        "CRITICAL: close_original partial SL failed after retry — "
+                        "counter is LIVE with NO stop on original. "
+                        "MANUAL INTERVENTION REQUIRED. "
+                        "original_signal_id=%s of_id=%s symbol=%s: %s",
+                        original["id"], of_id, original["symbol"], exc,
+                    )
+            except Exception as exc:
+                # Network / unexpected error — same retry path as Case B
+                if attempt == 1:
+                    logger.warning(
+                        "close_original partial SL unexpected error (attempt 1/2): "
+                        "original_signal_id=%s of_id=%s: %s — retrying in 2s",
+                        original["id"], of_id, exc,
+                    )
+                    time.sleep(2)
+                else:
+                    set_sl_placed_sync(counter["id"], placed=False)
+                    logger.critical(
+                        "CRITICAL: close_original partial SL failed after retry — "
+                        "counter is LIVE with NO stop on original. "
+                        "MANUAL INTERVENTION REQUIRED. "
+                        "original_signal_id=%s of_id=%s symbol=%s: %s",
+                        original["id"], of_id, original["symbol"], exc,
+                    )
 
     def _maybe_complete_original_after_counter_tp(
         self, tp_order_id: str, fill_time: str
@@ -295,6 +372,22 @@ class OrderTracker:
         of_id = counter.get("of_id")
         if not of_id:
             return
+        # sl_placed values:
+        #   1    → SL was placed successfully; its fill caused the counter's TP to hit.
+        #          Mark the original COMPLETED.
+        #   0    → SL was never placed (Case A: original closed early, or Case B: API failed).
+        #          The original's closure is unrelated to this counter. Do NOT mark COMPLETED.
+        #   NULL → Legacy counter created before this column existed. Preserve old behavior
+        #          and mark COMPLETED so existing in-flight pairs are not broken.
+        sl_placed = counter.get("sl_placed")
+        if sl_placed == 0:
+            logger.info(
+                "COUNTER TP filled but sl_placed=0 — SL was never placed for of_id=%s "
+                "(original closed independently). Original status unchanged.",
+                of_id,
+            )
+            return
+
         original = get_original_signal_by_of_id_sync(of_id)
         if not original:
             logger.info(
