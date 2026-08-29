@@ -57,12 +57,6 @@ async def _reconcile_positions() -> None:
             open_orders = exchange.get_all_open_orders(category="linear", settle_coin="USDT")
             open_order_ids = {o["orderId"] for o in open_orders if "orderId" in o}
 
-            covered: dict[tuple[str, str], float] = {}
-            for o in open_orders:
-                if o.get("reduceOnly"):
-                    key = (o["symbol"], o["side"])
-                    covered[key] = covered.get(key, 0.0) + float(o.get("qty", 0))
-
             for pos in active:
                 symbol       = pos["symbol"]
                 pos_side     = pos["side"]
@@ -72,7 +66,14 @@ async def _reconcile_positions() -> None:
                 tp_side      = "Sell" if pos_side == "Buy" else "Buy"
                 action       = "buy" if pos_side == "Buy" else "sell"
 
-                covered_qty = covered.get((symbol, tp_side), 0.0)
+                # Covered qty is determined by DB tp_order_ids confirmed open on the exchange
+                # (not by reduceOnly flag — TP orders no longer carry reduceOnly per spec §10).
+                signals = await get_active_signals_needing_tp(symbol, action)
+                covered_qty = sum(
+                    float(s["quantity"])
+                    for s in signals
+                    if s.get("tp_order_id") and s["tp_order_id"] in open_order_ids
+                )
                 naked_qty   = round(size - covered_qty, 3)
 
                 if naked_qty <= 0:
@@ -85,8 +86,7 @@ async def _reconcile_positions() -> None:
                     symbol, pos_side, size, covered_qty, naked_qty,
                 )
 
-                # Per-signal TP placement — signals with no TP or a stale one
-                signals = await get_active_signals_needing_tp(symbol, action)
+                # Per-signal TP placement — signals with no TP or a cancelled/stale one
                 signals_needing_tp = [
                     s for s in signals
                     if not s.get("tp_order_id") or s["tp_order_id"] not in open_order_ids
@@ -170,13 +170,19 @@ async def _reconcile_positions() -> None:
                             symbol, tp_side, ghost_qty, exc,
                         )
 
-            history = exchange.get_order_history(category="linear", settle_coin="USDT", limit=50)
-            for o in history:
-                if o.get("reduceOnly") and o.get("orderStatus") in ("Cancelled", "Rejected"):
-                    logger.warning(
-                        "Reconciliation: %s TP detected symbol=%s order_id=%s — will re-check next cycle",
-                        o["orderStatus"], o["symbol"], o.get("orderId"),
-                    )
+            # Only check for cancelled TPs when positions are still open — avoids
+            # repeated warnings for stale entries that linger in order history.
+            active_symbols = {pos["symbol"] for pos in active}
+            if active_symbols:
+                history = exchange.get_order_history(category="linear", settle_coin="USDT", limit=50)
+                for o in history:
+                    if (o.get("reduceOnly")
+                            and o.get("orderStatus") in ("Cancelled", "Rejected")
+                            and o.get("symbol") in active_symbols):
+                        logger.warning(
+                            "Reconciliation: %s TP detected symbol=%s order_id=%s",
+                            o["orderStatus"], o["symbol"], o.get("orderId"),
+                        )
 
         except Exception as exc:
             logger.error("Reconciliation watchdog error: %s", exc)
