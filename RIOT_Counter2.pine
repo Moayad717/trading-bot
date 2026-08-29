@@ -8,33 +8,60 @@ indicator("RIOT 8003 L UNIFIED (STD + Counter)", overlay=true, max_boxes_count=5
 //   engine instead of two separate copies.
 // - OB and REV order-flow types are DROPPED. Only STD order flows exist.
 // - Counter arming is a CONTINUOUS check on every confirmed bar while the
-//   STD trade is open (not a one-shot "first bar only" check) — this matches
+//   STD trade is open (not a one-shot "first bar only" check) â€” this matches
 //   the methodology actually used in the historical $-P&L backtest, so the
 //   validated results (win rate, speed, net $ at 10m/15m/30m/2h) apply.
-// - Dynamic SL: the STD order flow has NO stop-loss until its Counter fires.
-//   The instant the Counter FILLS, ONE alert goes out carrying two resting
-//   limit orders: the counter's own entry (TP attached as usual) AND a
-//   reduce-only limit on the ORIGINAL position at that same TP price — the
-//   dynamic SL. Both sit on the exchange from that moment, so whichever side
-//   price reaches, the exchange matches it directly. Pine never has to notice
-//   the TP being reached on a later bar, and no second alert is sent to close.
-//   Requires bot support for the "close_original" block on the counter payload
-//   and for "cancel_close_original" (see below). The close_original order MUST
-//   be placed on the counter's ENTRY FILL event, never on alert receipt — see
-//   the "place_on" note above build_counter_fill_payload().
+// - ANYTHING THAT CONFIRMS GOES STRAIGHT TO THE EXCHANGE. Nothing is held
+//   inside the indicator waiting to be triggered. The STD fires its alert at
+//   confirmation; the Counter fires its alert the moment it ARMS. Both then
+//   rest as real orders on Bybit and the exchange fills them at the exact
+//   level. Pine only mirrors what should be happening.
+// - Dynamic SL: the STD order flow has NO stop-loss until its Counter actually
+//   opens. The counter's arm alert carries a "close_original" block, but the
+//   bot must apply it ONLY on the counter's ENTRY FILL event â€” never on alert
+//   receipt â€” and as a PARTIAL POSITION stop, not a reduce-only limit. Both
+//   requirements are explained above build_counter_arm_payload(); getting
+//   either wrong breaks the mechanism. Requires bot support for
+//   "close_original" and "cancel_close_original".
 // - If Counter Trade is disabled and the STD box's far end still gets swept,
 //   the STD flow is simply marked closed with no SL price (matches the
 //   "only if counter is activated" rule literally).
+// - Whether a CLOSED STD order flow is kept for review or dropped from tracking
+//   is a user toggle (History / Retention). Whenever a record is dropped, its
+//   drawn objects are deleted first so nothing is orphaned on the chart.
 // - Long and short entries carry separate margin inputs on both the STD leg
 //   and the Counter leg, matching the live bot's asymmetric long/short cost
-//   structure.
+//   structure. The counter's inputs are named by the ORDER FLOW they hedge,
+//   not by the counter's own direction â€” see the note at the inputs.
 // - TP is re-checked every bar even after a counter has armed/filled. If price
 //   recovers to the STD's own TP while a counter is live, the STD closes on its
-//   own TP — and the reduce-only SL limit still resting on the book for that
-//   position is no longer wanted, so a "cancel_close_original" alert fires to
-//   pull it. Without this the SL limit is orphaned on the exchange.
+//   own TP and a "cancel_close_original" alert fires to pull the now-orphaned
+//   SL off that position.
+// - A COUNTER IS NEVER KILLED BY WHAT THE ORIGINAL DOES. Once armed it runs its
+//   own lifecycle â€” armed -> filled -> its own TP â€” because its entry limit is
+//   a real live order on Bybit. Marking it finished when the original closes
+//   would desync Pine from that order and would also count a counter that never
+//   opened as "Done".
+//   Its state machine therefore lives in its OWN loop (section 9b), NOT nested
+//   inside the order flow loop. Nesting it was a real bug: the instant the
+//   original closed and left of_watch, the only code advancing its counter went
+//   with it and the counter froze in ACTIVE forever â€” live charts had 129 of
+//   357 counters stuck that way, boxes stretched to the right edge, ignoring
+//   every TP the price crossed.
+// - âš  A COUNTER IS ONLY SENT IF ITS ORIGINAL WAS SENT. Pine rebuilds this whole
+//   state machine from history whenever the script loads or an input changes,
+//   and historical bars fire NO alerts. A flow that never reached its TP stays
+//   ACTIVE and is the last thing the trim evicts, so a replayed flow can live
+//   for months and then have its far end swept on a REALTIME bar â€” firing an
+//   arm alert for an id the bot has never seen. The bot then opens the counter,
+//   cannot resolve the original, and leaves it running with no hedge and no
+//   stop. That happened live on 8003 on 2026-08-19: a counter armed from a
+//   2026-05-22 order flow. Each flow now records whether its own entry alert
+//   really went out (live_entry) and the counter inherits it (bot_linked).
+//   Unlinked counters are still tracked and drawn â€” greyed out and marked
+//   CHART ONLY, counted separately in the table â€” but nothing is ever sent.
 // - The counter's OWN TP is only evaluated on bars AFTER its fill bar, and it
-//   is bookkeeping only (no alert) — the real close is already resting on the
+//   is bookkeeping only (no alert) â€” the real closes are already resting on the
 //   exchange. The guard still matters so the chart/table don't mark a counter
 //   completed on the very bar it filled.
 // - Counter box visualization also draws the ORIGINAL signal's entry/TP as
@@ -47,11 +74,23 @@ indicator("RIOT 8003 L UNIFIED (STD + Counter)", overlay=true, max_boxes_count=5
 //   entry, TP + distance %, SL once live, and the id used in the alerts.
 // - Live markers: on the last bar, a compact price tag past the current candle
 //   for every live level (STD entry/TP/SL and Counter entry/TP).
-// - History is user-controlled per side (see the History / Retention group):
-//   KEEP decides whether a completed record survives at all, SHOW decides
-//   whether its drawings are on the chart. Completed records are always
-//   evicted before live ones when an array fills, so retaining history can
-//   never push an open position out of tracking.
+// - History is user-controlled per side (History / Retention group): KEEP
+//   decides whether a completed record survives at all, SHOW decides whether
+//   its drawings are on the chart. NOTE: "Keep completed STD order flows" is
+//   OFF by default â€” with it off a closed flow's box is deleted, so the "show
+//   completed" toggle beneath it has nothing left to display. Turn KEEP on
+//   first if you want closed STD zones to stay visible.
+//
+// CAPACITY â€” MAX_WATCH / MAX_CTR are a TRIM TARGET ONLY, never a gate on
+// signal creation. An order flow is always created and always alerts; the trim
+// only decides what ages out. This matters: an earlier version gated creation
+// on array size, so once the array filled the indicator silently stopped
+// producing order flows AND stopped firing alerts to the bot â€” a mute failure
+// with no error anywhere. Eviction order is CLOSED first, then PENDING (a
+// resting entry that never filled has no path to close itself, so stale ones
+// would clog the array forever â€” these are what actually pile up), and only
+// then anything else, so a live ACTIVE/ARMED position is the last thing
+// dropped.
 // ============================================================================
 
 // ============================== 1. INPUTS ==============================
@@ -60,17 +99,22 @@ in_std_enable     = input.bool(true, "Enable STD Order Flow", group=gT, tooltip=
 in_counter_enable = input.bool(true, "Enable Counter Trade", group=gT, tooltip="Controls whether a Counter (fade) position is ever armed/traded when a STD order flow's far end is swept.")
 in_roi     = input.float(25.0, "Target ROI %", minval=0.1, step=0.1, group=gT)
 in_lev     = input.float(50.0, "Leverage", minval=1.0, step=1.0, group=gT)
-in_std_long_margin  = input.float(0.20, "STD Order Flow Margin — Long (USDT)",  step=0.01, group=gT)
-in_std_short_margin = input.float(0.13, "STD Order Flow Margin — Short (USDT)", step=0.01, group=gT)
-in_ctr_long_margin  = input.float(0.80, "Counter Trade Margin — Long (USDT)",  step=0.01, group=gT)
-in_ctr_short_margin = input.float(0.52, "Counter Trade Margin — Short (USDT)", step=0.01, group=gT)
+in_std_long_margin  = input.float(1.00, "STD Order Flow Margin â€” Long (USDT)",  step=0.01, group=gT)
+in_std_short_margin = input.float(0.33, "STD Order Flow Margin â€” Short (USDT)", step=0.01, group=gT)
+// Counter margins are named by the ORDER FLOW they hedge, not by the counter's
+// own direction â€” a counter is always the opposite side of its original, so
+// naming them by their own direction inverts the pairing and silently breaks
+// the size ratio. "for LONG order flows" is a SHORT counter, and vice versa.
+in_ctr_for_long_margin  = input.float(4.00, "Counter Margin â€” for LONG order flows (USDT)",  step=0.01, group=gT, tooltip="Margin of the counter that hedges a LONG order flow. That counter is itself a SHORT. Keep this at the intended multiple of 'STD Order Flow Margin â€” Long'.")
+in_ctr_for_short_margin = input.float(1.32, "Counter Margin â€” for SHORT order flows (USDT)", step=0.01, group=gT, tooltip="Margin of the counter that hedges a SHORT order flow. That counter is itself a LONG. Keep this at the intended multiple of 'STD Order Flow Margin â€” Short'.")
 
 gM = "Rule Mode"
 in_mode  = input.string("STD-plain", "Rule mode", options=["STD-plain","STD-ORBK"], group=gM, tooltip="STD-plain = unfiltered STD (recommended: ~9x more signals, same ~99% close quality). STD-ORBK = legacy filtered behavior. The ORBK flag is still recorded/tagged in the alert either way.")
 in_debug = input.bool(false, "Debug: mark ALL STD (grey)", group=gM)
 
 gB = "Bot"
-in_inst = input.string("LINKUSDT.P", "TV Instrument", group=gB)
+// syminfo.ticker auto-resolves to the chart's symbol (e.g. TAOUSDT.P) — no manual input needed.
+in_inst = syminfo.ticker
 
 gD = "Direction"
 in_dir = input.string("Bullish", "Direction", options=["Bullish","Bearish"], group=gD, tooltip="Run one Bullish copy + one Bearish copy.")
@@ -80,6 +124,8 @@ in_show_box       = input.bool(true, "Show STD box", group=gV)
 in_show_mk        = input.bool(true, "Show STD markers", group=gV)
 in_show_tp        = input.bool(true, "Show STD entry/TP/SL lines", group=gV)
 in_show_counter        = input.bool(true, "Show Counter boxes", group=gV)
+in_show_ctr_orig_lines = input.bool(false, "  â”” Also draw the original's entry/TP on Counter boxes", group=gV, tooltip="Adds 2 dashed reference lines per counter showing the levels of the order flow it hedges. OFF by default: it doubles the counter's line cost from 2 to 4 and the chart runs out of the 500-line budget, after which Pine silently deletes the oldest lines. If you turn this on, lower MAX_CTR in the code to about 50.")
+in_show_ctr_unlinked   = input.bool(true, "  â”” Show chart-only Counters (not sent to bot)", group=gV, tooltip="Counters armed from an order flow that Pine rebuilt during history replay. No order for them exists on the exchange â€” they are drawn greyed out and marked CHART ONLY. Turn off to see only counters that were really sent.")
 in_show_std_lbl   = input.bool(false, "Show STD info labels (filled only)", group=gV, tooltip="Text label on each FILLED STD order flow showing entry / TP / SL / id. Off by default because a busy chart can carry many open flows at once.")
 in_show_live      = input.bool(true, "Show live markers at right edge", group=gV, tooltip="On the last bar, print the price of every live position (STD and Counter) at the current bar so the numbers are readable without hovering.")
 in_show_table     = input.bool(true, "Show stats table", group=gV)
@@ -93,16 +139,16 @@ in_tbl_pos        = input.string("Top Right", "Table position",
 // stays clean, or cleared entirely when it isn't wanted.
 gH = "History / Retention"
 in_keep_std_done  = input.bool(false, "Keep completed STD order flows",   group=gH, tooltip="OFF: a closed STD flow is dropped from tracking and its drawings deleted (lowest memory, no history). ON: the record is kept so its zone can stay on the chart for review. Closed records are always evicted before open ones when the tracking array fills, so keeping history never pushes a live position out of tracking.")
-in_show_std_done  = input.bool(true,  "  └ Show completed STD on chart",  group=gH, tooltip="Only applies when 'Keep completed STD order flows' is ON. Turn off to keep the records but hide the drawings.")
+in_show_std_done  = input.bool(true,  "  â”” Show completed STD on chart",  group=gH, tooltip="Only applies when 'Keep completed STD order flows' is ON. Turn off to keep the records but hide the drawings.")
 in_keep_ctr_done  = input.bool(true,  "Keep completed Counter trades",    group=gH, tooltip="OFF: a finished counter is dropped from tracking and its drawings deleted. ON: kept for review.")
-in_show_counter_done = input.bool(true, "  └ Show completed Counter on chart", group=gH, tooltip="Only applies when 'Keep completed Counter trades' is ON.")
+in_show_counter_done = input.bool(true, "  â”” Show completed Counter on chart", group=gH, tooltip="Only applies when 'Keep completed Counter trades' is ON.")
 
 bool IS_BULL = in_dir == "Bullish"
 bool GATED   = in_mode == "STD-ORBK"
 string tf_actual = timeframe.period
 [tf_open, tf_high, tf_low, tf_close, tf_time] = request.security(syminfo.tickerid, tf_actual, [open, high, low, close, time], lookahead=barmerge.lookahead_off)
 
-// Scale anchor — an invisible plot keeps the price scale tied to price even
+// Scale anchor â€” an invisible plot keeps the price scale tied to price even
 // when every other drawing is off-screen or hidden, so the chart never
 // auto-scales to nothing.
 plot(close, title="Scale Anchor", color=color.new(color.white, 100), editable=false)
@@ -124,40 +170,58 @@ get_table_pos(s) =>
 f_det_id(t, is_long) =>
     str.tostring(t) + (is_long ? "L" : "S")
 
+// "price" is ALWAYS sent, on market orders too. The bot derives the take-profit
+// from it (`tp_base = price if price is not None else trigger_price`), and the
+// TP must be anchored to the ORDER FLOW'S LEVEL â€” never to the confirmation
+// candle's close. Omitting it on the deep/market path made the bot anchor the
+// TP to the close, so Bybit ended up holding a TP at a different price than the
+// one Pine drew and tracked. On market orders Bybit ignores `price` (only LIMIT
+// forwards it), so sending it always is safe and only fixes the TP anchor.
 build_payload(is_long, entry, tp, cur, margin, rule, ofid) =>
     string act = is_long ? "enter_long" : "enter_short"
     float cost = margin * in_lev
     bool deep = is_long ? (cur <= entry) : (cur >= entry)
     string otype = deep ? "market" : "limit"
-    string pp = deep ? "" : '"price": "' + str.tostring(entry, "#.#####") + '", '
-    '{"id": "' + ofid + '", "interval": "' + tf_actual + '", "trigger_price": "' + str.tostring(cur) + '", "tv_instrument": "' + in_inst + '", "action": "' + act + '", "order": {' + pp + '"amount": "' + str.tostring(cost) + '", "currency_type": "quote", "order_type": "' + otype + '"}, "take_profit": {"enabled": true, "steps": [{"order_type": "limit", "price_percent": ' + str.tostring(is_long ? (in_roi / in_lev) : -(in_roi / in_lev), "#.####") + ', "volume_percent": 100}]}, "rule_type": "' + rule + '"}'
+    '{"id": "' + ofid + '", "interval": "' + tf_actual + '", "trigger_price": "' + str.tostring(cur) + '", "tv_instrument": "' + in_inst + '", "action": "' + act + '", "order": {"price": "' + str.tostring(entry, "#.#####") + '", "amount": "' + str.tostring(cost) + '", "currency_type": "quote", "order_type": "' + otype + '"}, "take_profit": {"enabled": true, "steps": [{"order_type": "limit", "price_percent": ' + str.tostring(is_long ? (in_roi / in_lev) : -(in_roi / in_lev), "#.####") + ', "volume_percent": 100}]}, "rule_type": "' + rule + '"}'
 
-// Counter fill payload — ONE alert that carries BOTH resting limit orders:
-//   1. the counter's own entry (with its TP attached, as usual), and
-//   2. "close_original": a reduce-only LIMIT order placed on the ORIGINAL STD
-//      position at the SAME price as the counter's TP.
-// Both rest on the exchange from this moment on. Whichever way price goes, the
-// exchange matches them itself — no second alert, no waiting for Pine to notice
-// a later bar close.
+// Counter ARM payload â€” fired the moment the counter is confirmed (the far end
+// swept), at that candle's close. Anything that confirms goes straight to the
+// exchange: the counter's entry limit rests on Bybit from here and Bybit fills
+// it at the exact level. Pine does NOT wait to detect the touch itself â€” doing
+// so was late by up to a full bar, missed wick fills, and could downgrade the
+// entry to a market order.
 //
-// ⚠ "place_on": "entry_fill" is a HARD requirement on the receiving bot, not a
-// hint. The close_original order must be placed at the instant the counter's
-// ENTRY actually fills — simultaneously with the counter's own TP — and never
-// on receipt of this alert. The counter's entry can go out as a limit that does
-// not fill (price wicks the level and rejects); placing the SL on receipt would
-// leave a stop-loss on the original with no counter position to offset it, so
-// the original would eat the full loss with no hedge. Pairing must be absolute:
-// counter open <=> SL placed.
-build_counter_fill_payload(is_long, entry, cur, margin, ofid, sl_price, orig_is_long) =>
+// It carries "close_original", the dynamic SL for the ORIGINAL, with two hard
+// requirements on the receiving bot:
+//
+// âš  "place_on": "entry_fill" â€” the SL is set ONLY at the instant the counter's
+//   entry actually fills, together with the counter's own TP, and NEVER on
+//   receipt of this alert. The entry can rest unfilled (price wicks the level
+//   and rejects); setting the SL early would leave the original stopped with no
+//   counter to offset it. Pairing must be absolute: counter open <=> SL set.
+//
+// âš  "mode": "partial_position_sl" â€” it must be a PARTIAL position stop, not a
+//   reduce-only limit and not a full-position stop.
+//   â€¢ Not a limit: an SL sits on the ACTIVE side of the book, so a sell-limit
+//     below market (long) or buy-limit above market (short) is immediately
+//     marketable and fills the instant it is placed â€” closing the original at
+//     the counter's ENTRY instead of waiting for the trigger.
+//   â€¢ Not full-position: on Bybit every same-side flow merges into ONE
+//     aggregated position, so a full-position stop would fire the entire book
+//     on a single flow's level.
+//   Size comes from the original's own fill, which the bot has stored under
+//   this same id.
+build_counter_arm_payload(is_long, entry, cur, margin, ofid, sl_trigger) =>
     string act  = is_long ? "enter_long" : "enter_short"
     float  cost = margin * in_lev
     bool   deep = is_long ? (cur <= entry) : (cur >= entry)
     string otype = deep ? "market" : "limit"
-    string pp = deep ? "" : '"price": "' + str.tostring(entry, "#.#####") + '", '
-    '{"id": "' + ofid + '", "interval": "' + tf_actual + '", "trigger_price": "' + str.tostring(cur) + '", "tv_instrument": "' + in_inst + '", "action": "' + act + '", "order": {' + pp + '"amount": "' + str.tostring(cost) + '", "currency_type": "quote", "order_type": "' + otype + '"}, "take_profit": {"enabled": true, "steps": [{"order_type": "limit", "price_percent": ' + str.tostring(is_long ? (in_roi / in_lev) : -(in_roi / in_lev), "#.####") + ', "volume_percent": 100}]}, "rule_type": "COUNTER", "close_original": {"id": "' + ofid + '", "order_type": "limit", "price": "' + str.tostring(sl_price, "#.#####") + '", "side": "' + (orig_is_long ? "sell" : "buy") + '", "reduce_only": true, "place_on": "entry_fill", "reason": "STD_DYNAMIC_SL"}}'
+    '{"id": "' + ofid + '", "interval": "' + tf_actual + '", "trigger_price": "' + str.tostring(cur) + '", "tv_instrument": "' + in_inst + '", "action": "' + act + '", "order": {"price": "' + str.tostring(entry, "#.#####") + '", "amount": "' + str.tostring(cost) + '", "currency_type": "quote", "order_type": "' + otype + '"}, "take_profit": {"enabled": true, "steps": [{"order_type": "limit", "price_percent": ' + str.tostring(is_long ? (in_roi / in_lev) : -(in_roi / in_lev), "#.####") + ', "volume_percent": 100}]}, "rule_type": "COUNTER", "close_original": {"id": "' + ofid + '", "mode": "partial_position_sl", "trigger_price": "' + str.tostring(sl_trigger, "#.#####") + '", "order_type": "market", "place_on": "entry_fill", "reason": "STD_DYNAMIC_SL"}}'
 
-// Cancel a resting reduce-only SL that is no longer needed — fired when the
-// ORIGINAL reaches its own TP while the SL order is still sitting on the book.
+// Pull the now-orphaned SL off the ORIGINAL when it closes on its OWN take
+// profit. Only meaningful once the counter has actually filled, because that is
+// when the SL was set. NOTE: if Bybit turns out to auto-remove a partial SL when
+// the position closes, this alert becomes redundant â€” pending verification.
 build_cancel_sl_payload(ofid, cur) =>
     '{"id": "' + ofid + '", "tv_instrument": "' + in_inst + '", "action": "cancel_close_original", "reason": "STD_TP_HIT_FIRST", "trigger_price": "' + str.tostring(cur) + '"}'
 
@@ -182,6 +246,11 @@ type OrderFlow
     float  counter_tp
     string state          // PENDING, ACTIVE, ARMED, CLOSED
     int    fill_bar
+    // TRUE only if this flow's entry alert actually went out to the bot, i.e.
+    // it was confirmed on a REALTIME bar with STD alerts enabled. Flows rebuilt
+    // during Pine's history replay have this FALSE â€” the bot has never heard of
+    // them, so nothing that references their id may be sent to the exchange.
+    bool   live_entry
     box    b_ref
     line   en_ref
     line   tp_ref
@@ -201,6 +270,11 @@ type CounterRecord
     string state          // ARMED, ACTIVE, INACTIVE
     int    end_time
     int    fill_bar
+    // TRUE when the arm alert was actually sent, i.e. the ORIGINAL was itself
+    // alerted live so the bot can resolve the id. FALSE = chart-only record:
+    // it is drawn and counted for study, but no order of any kind exists for
+    // it on the exchange and no alert will ever fire from it.
+    bool   bot_linked
     box    b_ref
     line   en_ref
     line   tp_ref
@@ -270,8 +344,22 @@ var bool  lf_mitig = false
 // ---- unified order-flow / counter tracking ----
 var array<OrderFlow>     of_watch = array.new<OrderFlow>()
 var array<CounterRecord> counters = array.new<CounterRecord>()
-var int MAX_WATCH = 150
-var int MAX_CTR   = 150
+// Tracking capacity. This is ONLY a trim target for the arrays â€” it never
+// gates signal creation. Order flows and counters are always created and
+// always alert; the trim below decides what ages out when capacity is reached.
+//
+// The caps are sized by the LINE budget, which is the binding constraint â€”
+// `max_lines_count` is 500 and Pine silently deletes the oldest line once that
+// is exceeded, leaving old boxes stripped of their levels with no error.
+//   STD flow  : 3 lines (entry, TP, SL)  -> 100 x 3 = 300
+//   Counter   : 2 lines (entry, TP)      ->  80 x 2 = 160   [4 if the original
+//               reference lines are switched on â€” see in_show_ctr_orig_lines]
+//   worst case                              = 460  < 500  OK
+// Turning the counter's original-reference lines ON raises the counter cost to
+// 320 and the worst case to 620, which OVERFLOWS. That input is off by default
+// for exactly this reason; if it is turned on, drop MAX_CTR to ~50.
+var int MAX_WATCH = 100
+var int MAX_CTR   = 80
 
 // ---- persistent stats (survive array trims/removals) ----
 var int std_total         = 0
@@ -438,23 +526,35 @@ if barstate.isconfirmed
         pS_liid := li_id
 
     // ---- Bullish STD candidate ----
+    // VALIDITY RULE: an INVALID (neutral / inside) candle can never CONFIRM an
+    // order flow. Confirmation is a structural event, so it requires a candle
+    // that actually moved structure. A neutral candle touching the level is
+    // ignored entirely â€” it neither confirms nor invalidates, so the pending
+    // level stays armed for a later valid candle.
+    // Execution is NOT gated by this: any candle, valid or not, can fill an
+    // entry, hit a take profit, or trigger a stop.
     if not na(pB_lvl)
         if (not in_UI) or (ui_id != pB_uiid)
             pB_lvl := na
             pB_uiid := na
-        else if tf_high >= pB_lvl
+        else if not neutral and tf_high >= pB_lvl
             if math.max(tf_open, tf_close) >= pB_lvl
                 bool orbk    = uf_exists and not uf_mitig and not li_ended_ob
                 bool gate_ok = GATED ? orbk : true
                 string rtag  = orbk ? "STD_ORBK" : "STD"
                 if in_debug and IS_BULL
                     label.new(bar_index, tf_low, "s", yloc=yloc.belowbar, style=label.style_label_up, color=color.new(color.gray, 50), textcolor=color.white, size=size.tiny)
-                if IS_BULL and gate_ok and array.size(of_watch) < MAX_WATCH
+                if IS_BULL and gate_ok
                     n_gate_pass := n_gate_pass + (orbk ? 1 : 0)
                     n_gate_fail := n_gate_fail + (orbk ? 0 : 1)
                     float tp = tp_of(true, pB_lvl)
                     string ofid = f_det_id(tf_time, true)
                     std_total += 1
+                    // alert() is a no-op on historical bars â€” only a REALTIME
+                    // confirmation actually reaches the bot. Record which one
+                    // this was: it decides whether anything referencing this
+                    // flow's id may later be sent to the exchange.
+                    bool sent_live = barstate.isrealtime and in_std_enable
                     if in_std_enable
                         alert(build_payload(true, pB_lvl, tp, tf_close, in_std_long_margin, rtag, ofid), alert.freq_all)
                     box  bref = na
@@ -467,27 +567,31 @@ if barstate.isconfirmed
                     if in_show_tp
                         enref := line.new(bar_index, pB_lvl, bar_index, pB_lvl, color=color.new(#26a69a, 0), width=2)
                         tpref := line.new(bar_index, tp, bar_index, tp, color=color.new(#26a69a, 40), width=1, style=line.style_dashed)
-                    array.push(of_watch, OrderFlow.new(is_bull=true, is_orbk=orbk, box_top=pB_lvl, box_bot=pB_boxlow, entry_price=pB_lvl, tp_price=tp, sl_price=na, conf_bar=bar_index, conf_time=tf_time, entered=false, tp_hit=false, armed=false, sl_hit=false, counter_entry=pB_boxlow, counter_tp=tp_of(false, pB_boxlow), state="PENDING", fill_bar=na, b_ref=bref, en_ref=enref, tp_ref=tpref, sl_ref=na, lbl_ref=na, id=ofid))
+                        label.new(bar_index, tp, "TP " + str.tostring(tp, format.mintick), style=label.style_label_left, color=color.new(orbk ? color.teal : #26a69a, 20), textcolor=color.white, size=size.tiny)
+                    array.push(of_watch, OrderFlow.new(is_bull=true, is_orbk=orbk, box_top=pB_lvl, box_bot=pB_boxlow, entry_price=pB_lvl, tp_price=tp, sl_price=na, conf_bar=bar_index, conf_time=tf_time, entered=false, tp_hit=false, armed=false, sl_hit=false, counter_entry=pB_boxlow, counter_tp=tp_of(false, pB_boxlow), state="PENDING", fill_bar=na, live_entry=sent_live, b_ref=bref, en_ref=enref, tp_ref=tpref, sl_ref=na, lbl_ref=na, id=ofid))
             pB_lvl := na
 
     // ---- Bearish STD candidate ----
+    // Same validity rule as the bullish side: no confirmation on a neutral bar.
     if not na(pS_lvl)
         if (not in_LI) or (li_id != pS_liid)
             pS_lvl := na
             pS_liid := na
-        else if tf_low <= pS_lvl
+        else if not neutral and tf_low <= pS_lvl
             if math.min(tf_open, tf_close) <= pS_lvl
                 bool orbk    = lf_exists and not lf_mitig and not ui_ended_ob
                 bool gate_ok = GATED ? orbk : true
                 string rtag  = orbk ? "STD_ORBK" : "STD"
                 if in_debug and not IS_BULL
                     label.new(bar_index, tf_high, "s", yloc=yloc.abovebar, style=label.style_label_down, color=color.new(color.gray, 50), textcolor=color.white, size=size.tiny)
-                if (not IS_BULL) and gate_ok and array.size(of_watch) < MAX_WATCH
+                if (not IS_BULL) and gate_ok
                     n_gate_pass := n_gate_pass + (orbk ? 1 : 0)
                     n_gate_fail := n_gate_fail + (orbk ? 0 : 1)
                     float tp = tp_of(false, pS_lvl)
                     string ofid = f_det_id(tf_time, false)
                     std_total += 1
+                    // Same as the bullish side â€” see the note there.
+                    bool sent_live = barstate.isrealtime and in_std_enable
                     if in_std_enable
                         alert(build_payload(false, pS_lvl, tp, tf_close, in_std_short_margin, rtag, ofid), alert.freq_all)
                     box  bref = na
@@ -500,22 +604,33 @@ if barstate.isconfirmed
                     if in_show_tp
                         enref := line.new(bar_index, pS_lvl, bar_index, pS_lvl, color=color.new(#ef5350, 0), width=2)
                         tpref := line.new(bar_index, tp, bar_index, tp, color=color.new(#ef5350, 40), width=1, style=line.style_dashed)
-                    array.push(of_watch, OrderFlow.new(is_bull=false, is_orbk=orbk, box_top=pS_boxhigh, box_bot=pS_lvl, entry_price=pS_lvl, tp_price=tp, sl_price=na, conf_bar=bar_index, conf_time=tf_time, entered=false, tp_hit=false, armed=false, sl_hit=false, counter_entry=pS_boxhigh, counter_tp=tp_of(true, pS_boxhigh), state="PENDING", fill_bar=na, b_ref=bref, en_ref=enref, tp_ref=tpref, sl_ref=na, lbl_ref=na, id=ofid))
+                        label.new(bar_index, tp, "TP " + str.tostring(tp, format.mintick), style=label.style_label_left, color=color.new(orbk ? color.red : #ef5350, 20), textcolor=color.white, size=size.tiny)
+                    array.push(of_watch, OrderFlow.new(is_bull=false, is_orbk=orbk, box_top=pS_boxhigh, box_bot=pS_lvl, entry_price=pS_lvl, tp_price=tp, sl_price=na, conf_bar=bar_index, conf_time=tf_time, entered=false, tp_hit=false, armed=false, sl_hit=false, counter_entry=pS_boxhigh, counter_tp=tp_of(true, pS_boxhigh), state="PENDING", fill_bar=na, live_entry=sent_live, b_ref=bref, en_ref=enref, tp_ref=tpref, sl_ref=na, lbl_ref=na, id=ofid))
             pS_lvl := na
 
 // ============================== 9. ORDER FLOW LIFECYCLE + COUNTER ARMING ==============================
 if barstate.isconfirmed
-    // Trim of_watch. With history retention ON, closed records accumulate and
-    // must NEVER push a still-open flow out of tracking — an evicted open flow
-    // stops being managed entirely (no TP detection, its counter never arms).
-    // So always evict the oldest CLOSED record first, and only fall back to
-    // dropping the oldest record of any state when nothing closed is left.
+    // Trim of_watch. An evicted record stops being managed entirely â€” no TP
+    // detection, its counter never arms â€” so what gets dropped matters.
+    // Priority, safest first:
+    //   1. CLOSED   â€” pure history, nothing left to manage.
+    //   2. PENDING  â€” a resting entry that never filled. It has NO path to
+    //                 close on its own (every close path requires a fill), so
+    //                 stale ones would otherwise occupy a slot forever and
+    //                 clog the array. These are the ones that pile up.
+    //   3. anything â€” only if neither exists. A live ACTIVE/ARMED position is
+    //                 always the very last thing dropped.
     while array.size(of_watch) > MAX_WATCH
         int drop_i = -1
         for k = 0 to array.size(of_watch) - 1
             if array.get(of_watch, k).state == "CLOSED"
                 drop_i := k
                 break
+        if drop_i == -1
+            for k = 0 to array.size(of_watch) - 1
+                if array.get(of_watch, k).state == "PENDING"
+                    drop_i := k
+                    break
         if drop_i == -1
             drop_i := 0
         old_of = array.get(of_watch, drop_i)
@@ -542,12 +657,19 @@ if barstate.isconfirmed
         if drop_c == -1
             drop_c := 0
         old_c = array.get(counters, drop_c)
+        // Guarded individually â€” the two original-reference lines are optional
+        // and are legitimately na while the box and the other lines exist.
         if not na(old_c.b_ref)
             box.delete(old_c.b_ref)
+        if not na(old_c.en_ref)
             line.delete(old_c.en_ref)
+        if not na(old_c.tp_ref)
             line.delete(old_c.tp_ref)
+        if not na(old_c.orig_en_ref)
             line.delete(old_c.orig_en_ref)
+        if not na(old_c.orig_tp_ref)
             line.delete(old_c.orig_tp_ref)
+        if not na(old_c.lbl_ref)
             label.delete(old_c.lbl_ref)
         array.remove(counters, drop_c)
 
@@ -559,10 +681,15 @@ if barstate.isconfirmed
             if cpg.state == "INACTIVE"
                 if not na(cpg.b_ref)
                     box.delete(cpg.b_ref)
+                if not na(cpg.en_ref)
                     line.delete(cpg.en_ref)
+                if not na(cpg.tp_ref)
                     line.delete(cpg.tp_ref)
+                if not na(cpg.orig_en_ref)
                     line.delete(cpg.orig_en_ref)
+                if not na(cpg.orig_tp_ref)
                     line.delete(cpg.orig_tp_ref)
+                if not na(cpg.lbl_ref)
                     label.delete(cpg.lbl_ref)
                 array.remove(counters, j)
 
@@ -573,7 +700,7 @@ if barstate.isconfirmed
             if of.state == "CLOSED"
                 // Drawings are dropped when the record is being purged OR when
                 // completed flows are set to hidden. Deleting BEFORE removing
-                // the record matters — otherwise the box/lines/label are
+                // the record matters â€” otherwise the box/lines/label are
                 // orphaned on the chart forever (the exact bug class hunted
                 // down earlier in the Counter Entry script's eviction path).
                 bool purge_rec  = not in_keep_std_done
@@ -611,11 +738,11 @@ if barstate.isconfirmed
                     of.state := "ACTIVE"
                     of.fill_bar := bar_index
 
-            // TP check — only on bars AFTER the fill bar. Chronology: the entry
+            // TP check â€” only on bars AFTER the fill bar. Chronology: the entry
             // alert only goes out at the close of the bar where the fill is
             // detected, so the position does not exist on the exchange until
             // that bar has closed. A TP "touch" during the fill bar itself is
-            // therefore not reachable in reality and must be ignored — a trade
+            // therefore not reachable in reality and must be ignored â€” a trade
             // has to go PENDING -> ACTIVE -> (next bar or later) TP.
             // Runs regardless of armed state, so a late recovery to the STD's
             // own TP is never missed once a counter has armed/filled.
@@ -636,89 +763,104 @@ if barstate.isconfirmed
                         line.set_x2(of.sl_ref, bar_index)
                     // The ORIGINAL reached its own TP. If a counter had already
                     // filled, a reduce-only SL limit is still resting on the book
-                    // for this position — cancel it, or it is left orphaned once
+                    // for this position â€” cancel it, or it is left orphaned once
                     // the position closes on its own TP.
                     if of.armed and array.size(counters) > 0
                         for j = array.size(counters) - 1 to 0
                             c = array.get(counters, j)
                             if c.of_id == of.id and (c.state == "ARMED" or c.state == "ACTIVE")
-                                bool was_active = c.state == "ACTIVE"
-                                c.state := "INACTIVE"
-                                c.end_time := tf_time
-                                counter_completed += 1
-                                // Only cancel an SL that can still be resting.
-                                // If this same bar also reached the counter's TP,
-                                // that resting SL limit filled along with it —
-                                // cancelling it would target an order that no
-                                // longer exists. When both levels print on one
-                                // bar the intrabar order is unknowable, so the
-                                // safe assumption is that the SL filled.
-                                bool ctr_tp_same_bar = c.is_long ? (tf_high >= c.tp_price) : (tf_low <= c.tp_price)
-                                if was_active and not ctr_tp_same_bar
-                                    alert(build_cancel_sl_payload(of.id, tf_close), alert.freq_all)
-                                array.set(counters, j, c)
+                                // The counter is NOT touched here. It keeps its
+                                // own lifecycle â€” armed -> filled -> its own TP â€”
+                                // independent of whatever the original does. Its
+                                // entry limit is live on Bybit, so marking it
+                                // finished would desync Pine from a real order,
+                                // and counting it would inflate "Done" with a
+                                // counter that may never have opened.
+                                // Only the SL on the ORIGINAL is now orphaned.
+                                // It exists only if the counter already filled.
+                                // c.bot_linked: a CHART ONLY counter never sent
+                                // anything, so there is no SL on the exchange
+                                // to cancel and firing this would reference an
+                                // id the bot cannot resolve.
+                                if c.state == "ACTIVE" and c.bot_linked
+                                    // If this same bar also reached the counter's
+                                    // TP, the SL fired with it â€” nothing left to
+                                    // cancel. Intrabar order is unknowable, so
+                                    // assume it fired.
+                                    bool ctr_tp_same_bar = c.is_long ? (tf_high >= c.tp_price) : (tf_low <= c.tp_price)
+                                    if not ctr_tp_same_bar
+                                        alert(build_cancel_sl_payload(of.id, tf_close), alert.freq_all)
                                 break
                     array.set(of_watch, i, of)
                     continue
 
             // continuous far-end-cleared check -> arm counter (pre-arm only)
-            if of.entered and not of.tp_hit and not of.armed and not of.sl_hit
+            // Arming IS the counter's confirmation, so the same validity rule
+            // applies: a neutral / inside candle can never arm one, no matter
+            // where its body closed. Only the arming is gated â€” the counter's
+            // own fill, its TP and the SL it sets on the original all execute
+            // on any candle.
+            if of.entered and not of.tp_hit and not of.armed and not of.sl_hit and not neutral
                 float body_top = math.max(tf_open, tf_close)
                 float body_bot = math.min(tf_open, tf_close)
                 bool far_end_cleared = of.is_bull ? (body_bot <= of.box_bot) : (body_top >= of.box_top)
                 if far_end_cleared
-                    if in_counter_enable and array.size(counters) < MAX_CTR
+                    // No array-size gate here on purpose. Refusing to arm
+                    // because the array happens to be full would silently
+                    // close a live order flow for an internal housekeeping
+                    // reason â€” the trim at the top of this section handles
+                    // capacity, and it evicts finished records first.
+                    if in_counter_enable
                         of.armed := true
                         of.state := "ARMED"
                         counter_total += 1
-                        array.push(counters, CounterRecord.new(is_long=not of.is_bull, entry_price=of.counter_entry, tp_price=of.counter_tp, box_top=of.box_top, box_bot=of.box_bot, entry_time=tf_time, conf_time=of.conf_time, conf_bar=bar_index, state="ARMED", end_time=na, fill_bar=na, b_ref=na, en_ref=na, tp_ref=na, orig_en_ref=na, orig_tp_ref=na, lbl_ref=na, of_id=of.id))
+                        // âš  THE REPLAYED-ORIGINAL TRAP. Pine rebuilds this
+                        // whole array from history every time the script is
+                        // loaded or an input changes, and historical bars fire
+                        // NO alerts. A flow that never reached its TP stays
+                        // ACTIVE and is the LAST thing the trim evicts, so a
+                        // replayed flow can survive for months and then have
+                        // its far end swept on a REALTIME bar. The arm alert
+                        // would then go out carrying an id the bot has never
+                        // seen: it opens the counter, fails to resolve the
+                        // original, and leaves that counter running with no
+                        // hedge and no stop. This happened live on 8003 on
+                        // 2026-08-19 â€” counter armed from a 2026-05-22 flow.
+                        // The counter is still tracked and drawn (the chart
+                        // stays useful for study) but marked CHART ONLY and
+                        // NOTHING is sent.
+                        bool ctr_linked = of.live_entry
+                        array.push(counters, CounterRecord.new(is_long=not of.is_bull, entry_price=of.counter_entry, tp_price=of.counter_tp, box_top=of.box_top, box_bot=of.box_bot, entry_time=tf_time, conf_time=of.conf_time, conf_bar=bar_index, state="ARMED", end_time=na, fill_bar=na, bot_linked=ctr_linked, b_ref=na, en_ref=na, tp_ref=na, orig_en_ref=na, orig_tp_ref=na, lbl_ref=na, of_id=of.id))
+                        // ARM = CONFIRMED. The alert goes out at this candle's
+                        // close and the entry limit rests on Bybit from here.
+                        // Nothing is held inside the indicator waiting for a
+                        // touch â€” the exchange fills it at the exact level.
+                        // The counter is the opposite side of the original, but
+                        // its margin is looked up by the ORIGINAL's direction â€”
+                        // that is what keeps the size ratio to the position it
+                        // actually hedges.
+                        if ctr_linked
+                            bool   ctr_is_long = not of.is_bull
+                            float  ctr_margin  = of.is_bull ? in_ctr_for_long_margin : in_ctr_for_short_margin
+                            alert(build_counter_arm_payload(ctr_is_long, of.counter_entry, tf_close, ctr_margin, of.id, of.counter_tp), alert.freq_all)
                     else
+                        // Counter Trade genuinely switched off by the user â€”
+                        // the flow rides with no SL and is done here.
                         of.state := "CLOSED"
                         std_completed += 1
                         array.set(of_watch, i, of)
                         continue
 
-            // sync linked counter + dynamic SL
-            if of.armed and not of.sl_hit
-                if array.size(counters) > 0
-                    for j = array.size(counters) - 1 to 0
-                        c = array.get(counters, j)
-                        if c.of_id == of.id and (c.state == "ARMED" or c.state == "ACTIVE")
-                            // COUNTER FILLS — the single trigger event. One alert
-                            // places BOTH resting limit orders at once:
-                            //   • the counter's entry, with its own TP attached
-                            //   • a reduce-only limit on the ORIGINAL at that same
-                            //     TP price = the dynamic SL
-                            // From here the exchange matches them itself. Pine does
-                            // not need to observe the TP being reached later, and
-                            // no second alert is ever sent for the close.
-                            if c.state == "ARMED" and bar_index > c.conf_bar
-                                bool ctr_touch = c.is_long ? (tf_low <= c.entry_price) : (tf_high >= c.entry_price)
-                                if ctr_touch
-                                    c.state    := "ACTIVE"
-                                    c.fill_bar := bar_index
-                                    of.sl_price := c.tp_price
-                                    if in_show_tp
-                                        of.sl_ref := line.new(bar_index, of.sl_price, bar_index, of.sl_price, color=color.new(color.orange, 0), width=1, style=line.style_dotted)
-                                    if not na(c.entry_price) and not na(c.tp_price)
-                                        float ctr_margin = c.is_long ? in_ctr_long_margin : in_ctr_short_margin
-                                        alert(build_counter_fill_payload(c.is_long, c.entry_price, tf_close, ctr_margin, of.id, c.tp_price, of.is_bull), alert.freq_all)
-                            // Counter's TP reached — BOOKKEEPING ONLY. Both the
-                            // counter's TP and the original's SL were already
-                            // resting on the exchange since the fill above, so the
-                            // real closes happen there. This block just keeps the
-                            // on-chart state/table honest. No alert fires here.
-                            if c.state == "ACTIVE" and bar_index > c.fill_bar
-                                bool ctr_tp = c.is_long ? (tf_high >= c.tp_price) : (tf_low <= c.tp_price)
-                                if ctr_tp
-                                    c.state := "INACTIVE"
-                                    c.end_time := tf_time
-                                    counter_completed += 1
-                                    of.sl_hit := true
-                                    of.state := "CLOSED"
-                                    std_completed += 1
-                            array.set(counters, j, c)
-                            break
+            // NOTE: the counter's own fill/TP transitions used to live HERE,
+            // nested inside this loop and gated on `of.armed`. That was a bug.
+            // The moment the original closed it was removed from of_watch (or
+            // short-circuited past this point when retention kept it), and the
+            // only code that advanced its counter went with it â€” the counter
+            // froze in ACTIVE forever, box stretching to the right edge, no
+            // matter how many times price crossed its TP. Live charts showed
+            // 129 of 357 counters stuck this way.
+            // The counter now runs its own loop in section 9b, which reaches
+            // back to the original only when it needs to touch it. See there.
 
             // extend STD visuals
             if not na(of.en_ref)
@@ -728,7 +870,7 @@ if barstate.isconfirmed
             if not na(of.sl_ref)
                 line.set_x2(of.sl_ref, bar_index)
 
-            // STD info label — created once on the first bar the flow is
+            // STD info label â€” created once on the first bar the flow is
             // FILLED, then follows the right edge with live state. Only filled
             // flows get one: a pending flow is just a resting limit order and
             // its box/lines already say everything, so labelling every pending
@@ -736,7 +878,7 @@ if barstate.isconfirmed
             if in_show_std_lbl and of.entered
                 string of_state = of.armed ? (na(of.sl_price) ? "Armed" : "Active + SL") : "Active"
                 float  of_delta = ((of.tp_price / of.entry_price) - 1) * 100
-                string of_lbl   = "[" + tf_actual + "] STD " + (of.is_bull ? "▲ LONG" : "▼ SHORT") + " [" + of_state + "]" +
+                string of_lbl   = "[" + tf_actual + "] STD " + (of.is_bull ? "â–² LONG" : "â–¼ SHORT") + " [" + of_state + "]" +
                        "\nEntry: " + str.tostring(of.entry_price, "#.#####") +
                        "\nTP: "    + str.tostring(of.tp_price, "#.#####") + "  (" + str.tostring(of_delta, "#.##") + "%)" +
                        (na(of.sl_price) ? "" : "\nSL: " + str.tostring(of.sl_price, "#.#####")) +
@@ -755,26 +897,94 @@ if barstate.isconfirmed
 
             array.set(of_watch, i, of)
 
+// ============================== 9b. COUNTER LIFECYCLE (INDEPENDENT) ==========
+// The counter's own state machine, deliberately NOT nested inside the order
+// flow loop. A counter's entry limit and its TP are real live orders resting on
+// Bybit, so they must keep advancing whatever happens to the original â€”
+// including the original closing on its own TP and being evicted from of_watch
+// entirely. Nesting this was the bug that froze 129 of 357 counters in ACTIVE.
+//
+// Nothing here fires an alert. The counter's TP and the original's SL have both
+// been resting on the exchange since the counter's entry filled, so the real
+// closes happen there. This only keeps the chart and the table honest.
+//
+// The original is looked up by id ONLY on a transition bar (a fill or a TP), so
+// the nested scan costs nothing on ordinary bars. If the original is already
+// gone, the counter simply carries on alone.
+if barstate.isconfirmed and array.size(counters) > 0
+    for j = 0 to array.size(counters) - 1
+        c = array.get(counters, j)
+        if c.state == "INACTIVE"
+            continue
+
+        // ---- counter's entry fills ----
+        if c.state == "ARMED" and bar_index > c.conf_bar
+            bool ctr_touch = c.is_long ? (tf_low <= c.entry_price) : (tf_high >= c.entry_price)
+            if ctr_touch
+                c.state    := "ACTIVE"
+                c.fill_bar := bar_index
+                // Mirror the dynamic SL onto the original, if it is still tracked.
+                if array.size(of_watch) > 0
+                    for k = 0 to array.size(of_watch) - 1
+                        ofsl = array.get(of_watch, k)
+                        if ofsl.id == c.of_id and ofsl.state != "CLOSED"
+                            ofsl.sl_price := c.tp_price
+                            if in_show_tp
+                                ofsl.sl_ref := line.new(bar_index, c.tp_price, bar_index, c.tp_price, color=color.new(color.orange, 0), width=1, style=line.style_dotted)
+                            array.set(of_watch, k, ofsl)
+                            break
+
+        // ---- counter reaches its own TP ----
+        if c.state == "ACTIVE" and bar_index > c.fill_bar
+            bool ctr_tp = c.is_long ? (tf_high >= c.tp_price) : (tf_low <= c.tp_price)
+            if ctr_tp
+                c.state    := "INACTIVE"
+                c.end_time := tf_time
+                counter_completed += 1
+                // The original is stopped out at this same level â€” but only if
+                // it is still open. It may already have closed on its own TP
+                // earlier this same bar, in which case section 9 already counted
+                // it and touching it again would double-count std_completed.
+                if array.size(of_watch) > 0
+                    for k = 0 to array.size(of_watch) - 1
+                        ofcl = array.get(of_watch, k)
+                        if ofcl.id == c.of_id
+                            if ofcl.state != "CLOSED" and not ofcl.tp_hit and not ofcl.sl_hit
+                                ofcl.sl_hit := true
+                                ofcl.state  := "CLOSED"
+                                std_completed += 1
+                                array.set(of_watch, k, ofcl)
+                            break
+
+        array.set(counters, j, c)
+
 // ============================== 10. COUNTER VISUALIZATION ==============================
 if barstate.isconfirmed and array.size(counters) > 0
     for i = 0 to array.size(counters) - 1
         c = array.get(counters, i)
-        bool hide_this = (c.state == "INACTIVE" and not in_show_counter_done) or not in_show_counter
+        bool hide_this = (c.state == "INACTIVE" and not in_show_counter_done) or not in_show_counter or (not c.bot_linked and not in_show_ctr_unlinked)
         if hide_this
             if not na(c.b_ref)
                 box.delete(c.b_ref)
+                c.b_ref := na
+            // Individually guarded: the two original-reference lines are
+            // optional now, so they can legitimately be na while the rest exist.
+            if not na(c.en_ref)
                 line.delete(c.en_ref)
+                c.en_ref := na
+            if not na(c.tp_ref)
                 line.delete(c.tp_ref)
+                c.tp_ref := na
+            if not na(c.orig_en_ref)
                 line.delete(c.orig_en_ref)
-                line.delete(c.orig_tp_ref)
-                label.delete(c.lbl_ref)
-                c.b_ref       := na
-                c.en_ref      := na
-                c.tp_ref      := na
                 c.orig_en_ref := na
+            if not na(c.orig_tp_ref)
+                line.delete(c.orig_tp_ref)
                 c.orig_tp_ref := na
-                c.lbl_ref     := na
-                array.set(counters, i, c)
+            if not na(c.lbl_ref)
+                label.delete(c.lbl_ref)
+                c.lbl_ref := na
+            array.set(counters, i, c)
             continue
 
         color brd_c = c.state == "ACTIVE" ? (c.is_long ? color.new(#00e676,0) : color.new(#ff1744,0)) :
@@ -784,6 +994,12 @@ if barstate.isconfirmed and array.size(counters) > 0
                       c.state == "ARMED"  ? (c.is_long ? color.new(color.green,92) : color.new(color.red,92)) :
                       color.new(color.gray, 92)
         int brd_w = c.state == "ACTIVE" ? 3 : 1
+        // A CHART ONLY counter is drawn deliberately dull and thin so it can
+        // never be mistaken at a glance for a live hedged position.
+        if not c.bot_linked
+            brd_c := color.new(color.gray, 30)
+            bg_c  := color.new(color.gray, 95)
+            brd_w := 1
         int right_e = c.state == "INACTIVE" ? (not na(c.end_time) ? c.end_time : time) : time
 
         // Original signal's entry and TP on the opposite side of the box
@@ -794,20 +1010,29 @@ if barstate.isconfirmed and array.size(counters) > 0
 
         string state_txt = c.state == "ACTIVE" ? "Active" : c.state == "ARMED" ? "Armed" : "Completed"
         float  delta_pct = ((c.tp_price / c.entry_price) - 1) * 100
-        string lbl_txt = "[" + tf_actual + "] ⚡ Counter " + (c.is_long ? "▲ LONG" : "▼ SHORT") + " [" + state_txt + "]" +
+        string lbl_txt = "[" + tf_actual + "] âš¡ Counter " + (c.is_long ? "â–² LONG" : "â–¼ SHORT") + " [" + state_txt + "]" +
+               (c.bot_linked ? "" : "\nâš  CHART ONLY â€” original was never sent") +
                "\nEntry: " + str.tostring(c.entry_price, "#.#####") +
                "\nTP: "    + str.tostring(c.tp_price, "#.#####") + "  (" + str.tostring(delta_pct, "#.##") + "%)" +
-               "\nSL on original: " + str.tostring(c.tp_price, "#.#####") +
+               (c.bot_linked ? "\nSL on original: " + str.tostring(c.tp_price, "#.#####") : "") +
                "\nid: " + c.of_id
         float box_h = c.box_top - c.box_bot
         float lbl_y = c.is_long ? (c.box_bot - box_h * 0.5) : (c.box_top + box_h * 0.5)
 
+        // Entry line colour follows the same dulling rule as the box.
+        color ctr_en_col = c.bot_linked ? (c.is_long ? color.new(#00e676,20) : color.new(#ff1744,20)) : color.new(color.gray, 30)
+        color ctr_tp_col = c.bot_linked ? color.new(color.orange, 40) : color.new(color.gray, 55)
+
         if na(c.b_ref)
             c.b_ref       := box.new(c.entry_time, c.box_top, right_e, c.box_bot, brd_c, brd_w, line.style_solid, xloc=xloc.bar_time, bgcolor=bg_c)
-            c.en_ref      := line.new(c.entry_time, c.entry_price, right_e, c.entry_price, color=(c.is_long ? color.new(#00e676,20) : color.new(#ff1744,20)), width=3, style=line.style_solid, xloc=xloc.bar_time)
-            c.tp_ref      := line.new(c.entry_time, c.tp_price, right_e, c.tp_price, color=color.new(color.orange, 40), width=1, style=line.style_dashed, xloc=xloc.bar_time)
-            c.orig_en_ref := line.new(c.entry_time, orig_entry, right_e, orig_entry, color=orig_e_col, width=2, style=line.style_dashed, xloc=xloc.bar_time)
-            c.orig_tp_ref := line.new(c.entry_time, orig_tp_price, right_e, orig_tp_price, color=orig_tp_col, width=1, style=line.style_dashed, xloc=xloc.bar_time)
+            c.en_ref      := line.new(c.entry_time, c.entry_price, right_e, c.entry_price, color=ctr_en_col, width=3, style=line.style_solid, xloc=xloc.bar_time)
+            c.tp_ref      := line.new(c.entry_time, c.tp_price, right_e, c.tp_price, color=ctr_tp_col, width=1, style=line.style_dashed, xloc=xloc.bar_time)
+            // The original's levels are OPTIONAL â€” they double this counter's
+            // line cost and the 500-line budget is the binding constraint. See
+            // the MAX_CTR note in section 4.
+            if in_show_ctr_orig_lines
+                c.orig_en_ref := line.new(c.entry_time, orig_entry, right_e, orig_entry, color=orig_e_col, width=2, style=line.style_dashed, xloc=xloc.bar_time)
+                c.orig_tp_ref := line.new(c.entry_time, orig_tp_price, right_e, orig_tp_price, color=orig_tp_col, width=1, style=line.style_dashed, xloc=xloc.bar_time)
             c.lbl_ref     := label.new(right_e, lbl_y, text=lbl_txt, style=c.is_long ? label.style_label_up : label.style_label_down, color=brd_c, textcolor=color.white, size=size.small, xloc=xloc.bar_time)
         else
             box.set_right(c.b_ref, right_e)
@@ -815,9 +1040,23 @@ if barstate.isconfirmed and array.size(counters) > 0
             box.set_border_width(c.b_ref, brd_w)
             box.set_bgcolor(c.b_ref, bg_c)
             line.set_x2(c.en_ref, right_e)
+            line.set_color(c.en_ref, ctr_en_col)
             line.set_x2(c.tp_ref, right_e)
-            line.set_x2(c.orig_en_ref, right_e)
-            line.set_x2(c.orig_tp_ref, right_e)
+            line.set_color(c.tp_ref, ctr_tp_col)
+            // Toggled on after the counter was drawn: create them now.
+            if in_show_ctr_orig_lines and na(c.orig_en_ref)
+                c.orig_en_ref := line.new(c.entry_time, orig_entry, right_e, orig_entry, color=orig_e_col, width=2, style=line.style_dashed, xloc=xloc.bar_time)
+                c.orig_tp_ref := line.new(c.entry_time, orig_tp_price, right_e, orig_tp_price, color=orig_tp_col, width=1, style=line.style_dashed, xloc=xloc.bar_time)
+            // Toggled off: reclaim the two lines immediately.
+            if not in_show_ctr_orig_lines and not na(c.orig_en_ref)
+                line.delete(c.orig_en_ref)
+                line.delete(c.orig_tp_ref)
+                c.orig_en_ref := na
+                c.orig_tp_ref := na
+            if not na(c.orig_en_ref)
+                line.set_x2(c.orig_en_ref, right_e)
+            if not na(c.orig_tp_ref)
+                line.set_x2(c.orig_tp_ref, right_e)
             label.set_x(c.lbl_ref, right_e)
             label.set_y(c.lbl_ref, lbl_y)
             label.set_text(c.lbl_ref, lbl_txt)
@@ -839,7 +1078,7 @@ if barstate.islast and in_show_live
             ofl = array.get(of_watch, i)
             if ofl.entered and ofl.state != "CLOSED"
                 color lm_c = ofl.is_bull ? color.new(#26a69a, 10) : color.new(#ef5350, 10)
-                label.new(bar_index + lm_off, ofl.entry_price, text=(ofl.is_bull ? "▲ " : "▼ ") + str.tostring(ofl.entry_price, "#.#####"), style=label.style_label_left, color=lm_c, textcolor=color.white, size=size.tiny)
+                label.new(bar_index + lm_off, ofl.entry_price, text=(ofl.is_bull ? "â–² " : "â–¼ ") + str.tostring(ofl.entry_price, "#.#####"), style=label.style_label_left, color=lm_c, textcolor=color.white, size=size.tiny)
                 label.new(bar_index + lm_off, ofl.tp_price, text="TP " + str.tostring(ofl.tp_price, "#.#####"), style=label.style_label_left, color=color.new(color.teal, 55), textcolor=color.white, size=size.tiny)
                 if not na(ofl.sl_price)
                     label.new(bar_index + lm_off, ofl.sl_price, text="SL " + str.tostring(ofl.sl_price, "#.#####"), style=label.style_label_left, color=color.new(color.orange, 20), textcolor=color.white, size=size.tiny)
@@ -848,10 +1087,12 @@ if barstate.islast and in_show_live
     if array.size(counters) > 0
         for i = 0 to array.size(counters) - 1
             cl = array.get(counters, i)
-            if cl.state == "ACTIVE"
+            // CHART ONLY counters are excluded: a price tag at the right edge
+            // reads as a live position, and this one does not exist anywhere.
+            if cl.state == "ACTIVE" and cl.bot_linked
                 color lm_cc = cl.is_long ? color.new(#00e676, 10) : color.new(#ff1744, 10)
-                label.new(bar_index + lm_off, cl.entry_price, text="⚡ " + (cl.is_long ? "▲ " : "▼ ") + str.tostring(cl.entry_price, "#.#####"), style=label.style_label_left, color=lm_cc, textcolor=color.white, size=size.tiny)
-                label.new(bar_index + lm_off, cl.tp_price, text="⚡ TP " + str.tostring(cl.tp_price, "#.#####"), style=label.style_label_left, color=color.new(color.orange, 40), textcolor=color.white, size=size.tiny)
+                label.new(bar_index + lm_off, cl.entry_price, text="âš¡ " + (cl.is_long ? "â–² " : "â–¼ ") + str.tostring(cl.entry_price, "#.#####"), style=label.style_label_left, color=lm_cc, textcolor=color.white, size=size.tiny)
+                label.new(bar_index + lm_off, cl.tp_price, text="âš¡ TP " + str.tostring(cl.tp_price, "#.#####"), style=label.style_label_left, color=color.new(color.orange, 40), textcolor=color.white, size=size.tiny)
 
 // ============================== 11. STRUCTURE UPDATE ==============================
 if not neutral
@@ -883,6 +1124,7 @@ if barstate.islast and in_show_table
     int ctr_pending = 0
     int ctr_active  = 0
     int ctr_done    = 0
+    int ctr_ghost   = 0
     if array.size(counters) > 0
         for i = 0 to array.size(counters) - 1
             cw = array.get(counters, i)
@@ -892,6 +1134,10 @@ if barstate.islast and in_show_table
                 ctr_active += 1
             else if cw.state == "INACTIVE"
                 ctr_done += 1
+            // Tracked and drawn, but nothing was ever sent for them because
+            // their order flow only ever existed in Pine's history replay.
+            if not cw.bot_linked
+                ctr_ghost += 1
 
     table.delete(stat_tbl)
     stat_tbl := table.new(get_table_pos(in_tbl_pos), 5, 5, border_width=1)
@@ -902,7 +1148,7 @@ if barstate.islast and in_show_table
     color pdc = color.new(#ffb74d, 0)
     color dnc = color.new(#42a5f5, 0)
 
-    table.cell(stat_tbl, 0, 0, (GATED ? "STD-ORBK " : "STD-PLAIN ") + (IS_BULL ? "▲" : "▼"), bgcolor=hb, text_color=wt, text_size=size.small)
+    table.cell(stat_tbl, 0, 0, (GATED ? "STD-ORBK " : "STD-PLAIN ") + (IS_BULL ? "â–²" : "â–¼"), bgcolor=hb, text_color=wt, text_size=size.small)
     table.cell(stat_tbl, 1, 0, "Total", bgcolor=hb, text_color=wt, text_size=size.small)
     table.cell(stat_tbl, 2, 0, "Pend", bgcolor=hb, text_color=wt, text_size=size.small)
     table.cell(stat_tbl, 3, 0, "Active", bgcolor=hb, text_color=wt, text_size=size.small)
@@ -929,5 +1175,5 @@ if barstate.islast and in_show_table
     table.cell(stat_tbl, 0, 4, "ORBK y/n", bgcolor=lb, text_color=color.new(color.white,20), text_size=size.tiny)
     table.cell(stat_tbl, 1, 4, str.tostring(n_gate_pass), bgcolor=lb, text_color=okc, text_size=size.tiny)
     table.cell(stat_tbl, 2, 4, str.tostring(n_gate_fail), bgcolor=lb, text_color=pdc, text_size=size.tiny)
-    table.cell(stat_tbl, 3, 4, "", bgcolor=lb, text_color=wt, text_size=size.tiny)
-    table.cell(stat_tbl, 4, 4, "", bgcolor=lb, text_color=wt, text_size=size.tiny)
+    table.cell(stat_tbl, 3, 4, "Chart only", bgcolor=lb, text_color=color.new(color.white,20), text_size=size.tiny)
+    table.cell(stat_tbl, 4, 4, str.tostring(ctr_ghost), bgcolor=lb, text_color=(ctr_ghost > 0 ? color.new(color.gray, 0) : wt), text_size=size.tiny)
