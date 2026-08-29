@@ -362,23 +362,31 @@ def _handle_exit_position_sync(payload: dict, exchange: Any) -> None:
                         )
 
                 try:
-                    qty = round(float(counter.get("quantity") or 0), 1)
-                    if qty > 0:
-                        exchange.place_market_close_order(
+                    qty        = round(float(counter.get("quantity") or 0), 1)
+                    ctr_price  = counter.get("take_profit") or counter.get("stop_loss")
+                    if qty > 0 and ctr_price is not None:
+                        exchange.place_limit_close_order(
                             symbol=counter["symbol"],
                             side=close_side,
                             qty=qty,
+                            price=float(ctr_price),
                             position_idx=position_idx,
                             category=counter.get("category", "linear"),
                         )
                         logger.info(
-                            "exit_position/STD_TP_COUNTER_STILL_OPEN: market-closed counter "
-                            "symbol=%s side=%s qty=%s",
-                            counter["symbol"], close_side, qty,
+                            "exit_position/STD_TP_COUNTER_STILL_OPEN: limit-closed counter "
+                            "symbol=%s side=%s qty=%s price=%s",
+                            counter["symbol"], close_side, qty, ctr_price,
+                        )
+                    elif ctr_price is None:
+                        logger.error(
+                            "exit_position/STD_TP_COUNTER_STILL_OPEN: no price available to "
+                            "close counter symbol=%s — manual intervention required",
+                            counter["symbol"],
                         )
                 except Exception as exc:
                     logger.error(
-                        "exit_position/STD_TP_COUNTER_STILL_OPEN: market close counter failed: %s",
+                        "exit_position/STD_TP_COUNTER_STILL_OPEN: limit close counter failed: %s",
                         exc,
                     )
 

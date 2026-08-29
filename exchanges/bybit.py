@@ -59,20 +59,19 @@ class BybitExchange(BaseExchange):
         side = "Buy" if signal.action == Action.BUY else "Sell"
         qty  = self.round_qty(signal.quantity, signal.symbol, signal.category)
 
+        if signal.price is None:
+            raise ValueError("price is required for limit orders")
+
         params: Dict[str, Any] = {
-            "category": signal.category,
-            "symbol": signal.symbol,
-            "side": side,
-            "orderType": signal.order_type.value.capitalize(),
-            "qty": str(qty),
+            "category":    signal.category,
+            "symbol":      signal.symbol,
+            "side":        side,
+            "orderType":   "Limit",
+            "qty":         str(qty),
+            "price":       str(signal.price),
+            "timeInForce": "GTC",
             "positionIdx": 1 if side == "Buy" else 2,
         }
-
-        if signal.order_type == OrderType.LIMIT:
-            if signal.price is None:
-                raise ValueError("price is required for limit orders")
-            params["price"] = str(signal.price)
-            params["timeInForce"] = "GTC"
 
         if signal.stop_loss is not None:
             params["stopLoss"] = str(signal.stop_loss)
@@ -103,7 +102,6 @@ class BybitExchange(BaseExchange):
             "orderType": "Limit",
             "qty": str(qty),
             "price": str(price),
-            "reduceOnly": True,
             "timeInForce": "GTC",
             "positionIdx": position_idx,
         }
@@ -127,9 +125,9 @@ class BybitExchange(BaseExchange):
         """Attach a Partial stop-loss to an open position via set_trading_stop.
 
         tpslMode="Partial" targets only sl_size contracts, leaving the rest of
-        the position untouched.  slOrderType="Market" ensures the stop fills
-        immediately when triggered rather than sitting on the book as a limit
-        (which would be on the active side and fill at once for a short position).
+        the position untouched.  slOrderType="Limit" with slLimitPrice=trigger
+        means Bybit places a limit at the trigger price when triggered; if price
+        gaps through the level the order may not fill (accepted trade-off per spec).
         """
         params: Dict[str, Any] = {
             "category":    category,
@@ -137,8 +135,9 @@ class BybitExchange(BaseExchange):
             "tpslMode":    "Partial",
             "slSize":      str(sl_size),
             "stopLoss":    str(sl_trigger_price),   # Bybit v5 field (not slTriggerPrice)
-            "slTriggerBy": "LastPrice",
-            "slOrderType": "Market",
+            "slTriggerBy":  "LastPrice",
+            "slOrderType":  "Limit",
+            "slLimitPrice": str(sl_trigger_price),
             "positionIdx": position_idx,
         }
         response: Any = self._client.set_trading_stop(**params)
@@ -164,22 +163,24 @@ class BybitExchange(BaseExchange):
         self._raise_for_error(response)
         return response.get("result", {})
 
-    def place_market_close_order(
+    def place_limit_close_order(
         self,
         symbol: str,
         side: str,
         qty: float,
+        price: float,
         position_idx: int,
         category: str = "linear",
     ) -> Dict[str, Any]:
-        """Place a reduce-only Market order to close an open position immediately."""
+        """Place a Limit order to close an open position at the given price."""
         params: Dict[str, Any] = {
-            "category": category,
-            "symbol": symbol,
-            "side": side,
-            "orderType": "Market",
-            "qty": str(qty),
-            "reduceOnly": True,
+            "category":    category,
+            "symbol":      symbol,
+            "side":        side,
+            "orderType":   "Limit",
+            "qty":         str(qty),
+            "price":       str(price),
+            "timeInForce": "GTC",
             "positionIdx": position_idx,
         }
         response: Any = self._client.place_order(**params)
