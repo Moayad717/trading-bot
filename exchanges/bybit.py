@@ -266,6 +266,11 @@ class BybitExchange(BaseExchange):
         self._raise_for_error(response)
         return response.get("result", {})
 
+    def get_api_key_info(self) -> Dict[str, Any]:
+        response: Any = self._client.get_api_key_information()
+        self._raise_for_error(response)
+        return response.get("result", {})
+
     def get_balance(self, coin: str = "USDT") -> Dict[str, Any]:
         response: Any = self._client.get_wallet_balance(
             accountType="UNIFIED",

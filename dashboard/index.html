@@ -216,6 +216,7 @@
 <header>
     <div class="logo">Trading<span>Bot</span></div>
     <div class="header-meta">
+        <span id="api-key-badge" style="display:none"></span>
         <span id="updated-at"><span class="status-dot loading" id="dot"></span>Loading…</span>
         <span id="next-refresh"></span>
     </div>
@@ -683,10 +684,29 @@ function startCountdown() {
     }, 1000);
 }
 
+// ── API key expiry badge ──────────────────────────────────────────────────────
+async function loadApiKeyBadge() {
+    try {
+        const d = await fetch('/dashboard/api-key').then(r => r.json());
+        const badge = document.getElementById('api-key-badge');
+        if (d.error) { badge.style.display = 'none'; return; }
+        if (d.permanent) {
+            badge.innerHTML = '🔑 API key: permanent';
+            badge.style.color = 'var(--green)';
+        } else {
+            const days = d.days_left;
+            const color = days <= 7 ? 'var(--red)' : days <= 30 ? 'var(--amber)' : 'var(--green)';
+            badge.innerHTML = `🔑 API key: <span style="color:${color};font-weight:700">${days}d left</span>`;
+        }
+        badge.style.display = 'inline';
+    } catch(e) { /* silently ignore */ }
+}
+
 // ── Init ─────────────────────────────────────────────────────────────────────
 document.querySelector('th[data-col="timestamp"]').classList.add('sort-desc');
 refresh().then(startCountdown);
 loadSummary();
+loadApiKeyBadge();
 
 if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/dashboard/sw.js', {scope:'/dashboard/'});

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -46,6 +47,24 @@ async def service_worker() -> FileResponse:
 @router.get("/stats", summary="Performance statistics")
 async def performance_stats() -> Dict[str, Any]:
     return await get_performance_stats()
+
+
+@router.get("/api-key", summary="API key expiration info")
+async def api_key_info() -> Dict[str, Any]:
+    from exchanges.bybit import BybitExchange
+    loop = asyncio.get_event_loop()
+    try:
+        info = await loop.run_in_executor(None, lambda: BybitExchange().get_api_key_info())
+    except Exception as exc:
+        return {"error": str(exc), "days_left": None, "expired_at": None, "permanent": False}
+    days_left  = info.get("deadlineDay")
+    expired_at = info.get("expiredAt", "")
+    permanent  = (days_left == 0 and not expired_at)
+    return {
+        "days_left":  days_left,
+        "expired_at": expired_at,
+        "permanent":  permanent,
+    }
 
 
 @router.get("/signals/counts", summary="Per-status signal counts (all-time and today)")
