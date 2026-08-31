@@ -139,6 +139,16 @@ def check_completed_without_evidence() -> list[str]:
         by_symbol.setdefault(r["symbol"], []).append(dict(r))
 
     for symbol, sigs in by_symbol.items():
+        # The DB stores the RAW, unrounded quantity from signal parsing —
+        # the actual executed qty on Bybit is always rounded DOWN to the
+        # symbol's qtyStep (round_qty in exchanges/bybit.py), so it can
+        # legitimately differ from sig_qty by almost a full qtyStep. A fixed
+        # 0.01 tolerance is too tight for any symbol with a coarser step
+        # (LINK's is 0.1) and produces false alarms on perfectly real fills —
+        # confirmed live 2026-08-31: two genuinely-completed signals
+        # (qty=1.43891165954478, real fill=1.4, diff=0.0389) got flagged.
+        qty_tolerance = float(ex._get_qty_step(symbol)) * 1.01
+
         earliest_entry = min(
             (s["entry_fill_time"] for s in sigs if s.get("entry_fill_time")), default=None
         )
@@ -186,7 +196,7 @@ def check_completed_without_evidence() -> list[str]:
             candidates = [
                 e for e in closing
                 if e["side"] == close_side
-                and abs(float(e["closedSize"]) - sig_qty) < 0.01
+                and abs(float(e["closedSize"]) - sig_qty) < qty_tolerance
                 and int(e["execTime"]) > entry_ms
                 and e["orderId"] not in used_order_ids
             ]
