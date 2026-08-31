@@ -34,6 +34,15 @@ logger = logging.getLogger(__name__)
 
 tracker = OrderTracker(exchange=BybitExchange())
 
+# ── Reconciliation back-off state ──────────────────────────────────────────
+# Per-signal TP-placement failure counters. After _TP_MAX_FAILURES consecutive
+# reconciliation cycles fail to place a signal's TP, the signal is blacklisted
+# (never retried again this process's lifetime) and ONE critical log line is
+# emitted, instead of the same error repeating every 60 s forever.
+_tp_failure_counts: dict[int, int] = {}
+_tp_giveup: set[int] = set()
+_TP_MAX_FAILURES = 3
+
 
 async def _reconcile_positions() -> None:
     """Every 60 s, reconcile open Bybit positions against active TP orders.
@@ -66,13 +75,22 @@ async def _reconcile_positions() -> None:
                 tp_side      = "Sell" if pos_side == "Buy" else "Buy"
                 action       = "buy" if pos_side == "Buy" else "sell"
 
-                # Covered qty is determined by DB tp_order_ids confirmed open on the exchange
-                # (not by reduceOnly flag — TP orders no longer carry reduceOnly per spec §10).
+                # Covered qty is read directly from Bybit's own resting orders for this
+                # exact symbol+side+positionIdx — NOT from DB tp_order_id linkage. The DB
+                # view and Bybit's view can diverge badly (e.g. when several signals'
+                # individual TPs get consolidated into one bulk order): the DB then sees
+                # each of those signals as "uncovered" while Bybit already has the full
+                # qty covered by that one order, and the old DB-based check would hammer
+                # retries forever trying to "fix" a position that was never broken.
+                # Scoping by positionIdx (not just symbol+side) avoids counting an
+                # unrelated order on the opposite hedge-mode position as coverage.
                 signals = await get_active_signals_needing_tp(symbol, action)
                 covered_qty = sum(
-                    float(s["quantity"])
-                    for s in signals
-                    if s.get("tp_order_id") and s["tp_order_id"] in open_order_ids
+                    float(o.get("qty", 0))
+                    for o in open_orders
+                    if o.get("symbol") == symbol
+                    and o.get("side") == tp_side
+                    and o.get("positionIdx") == position_idx
                 )
                 naked_qty   = round(size - covered_qty, 3)
 
@@ -86,10 +104,12 @@ async def _reconcile_positions() -> None:
                     symbol, pos_side, size, covered_qty, naked_qty,
                 )
 
-                # Per-signal TP placement — signals with no TP or a cancelled/stale one
+                # Per-signal TP placement — signals with no TP or a cancelled/stale one,
+                # excluding any signal that has already exhausted its retry budget.
                 signals_needing_tp = [
                     s for s in signals
-                    if not s.get("tp_order_id") or s["tp_order_id"] not in open_order_ids
+                    if (not s.get("tp_order_id") or s["tp_order_id"] not in open_order_ids)
+                    and s["id"] not in _tp_giveup
                 ]
 
                 remaining = naked_qty
@@ -126,16 +146,29 @@ async def _reconcile_positions() -> None:
                         tp_order_id = result.get("order_id", "")
                         if tp_order_id and entry_oid:
                             set_tp_order_id_sync(entry_oid, tp_order_id)
+                        _tp_failure_counts.pop(sig["id"], None)
                         logger.info(
                             "Reconciliation: TP placed sig_id=%s tp_id=%s symbol=%s",
                             sig["id"], tp_order_id, symbol,
                         )
                         remaining = round(remaining - sig_qty, 8)
                     except Exception as exc:
-                        logger.error(
-                            "Reconciliation: failed TP for sig_id=%s symbol=%s: %s",
-                            sig["id"], symbol, exc,
-                        )
+                        fail_count = _tp_failure_counts.get(sig["id"], 0) + 1
+                        _tp_failure_counts[sig["id"]] = fail_count
+                        if fail_count >= _TP_MAX_FAILURES:
+                            _tp_giveup.add(sig["id"])
+                            logger.critical(
+                                "Reconciliation: GIVING UP on sig_id=%s symbol=%s after %d "
+                                "consecutive failed TP placements — will not retry again this "
+                                "run. MANUAL INTERVENTION REQUIRED. Last error: %s",
+                                sig["id"], symbol, fail_count, exc,
+                            )
+                        else:
+                            logger.error(
+                                "Reconciliation: failed TP for sig_id=%s symbol=%s "
+                                "(attempt %d/%d): %s",
+                                sig["id"], symbol, fail_count, _TP_MAX_FAILURES, exc,
+                            )
 
                 # Ghost bulk TP for qty not covered by any DB signal
                 ghost_qty = round(remaining, 3)
