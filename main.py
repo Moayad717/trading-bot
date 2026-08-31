@@ -84,6 +84,15 @@ async def _reconcile_positions() -> None:
                 # retries forever trying to "fix" a position that was never broken.
                 # Scoping by positionIdx (not just symbol+side) avoids counting an
                 # unrelated order on the opposite hedge-mode position as coverage.
+                #
+                # Conditional SL orders (place_conditional_sl) sit on the exact
+                # same symbol+side+positionIdx as a regular TP for that same
+                # position — a long's SL is a Sell/positionIdx=1 order, same as
+                # its TP — so without excluding them here they would count
+                # towards TP coverage and understate naked_qty. Excluded by
+                # orderLinkId suffix (reliable — every SL we place is tagged
+                # "<of_id>_SL") with a triggerPrice fallback for any order that
+                # somehow lacks a parseable tag.
                 signals = await get_active_signals_needing_tp(symbol, action)
                 covered_qty = sum(
                     float(o.get("qty", 0))
@@ -91,6 +100,8 @@ async def _reconcile_positions() -> None:
                     if o.get("symbol") == symbol
                     and o.get("side") == tp_side
                     and o.get("positionIdx") == position_idx
+                    and not str(o.get("orderLinkId", "")).endswith("_SL")
+                    and not o.get("triggerPrice")
                 )
                 naked_qty   = round(size - covered_qty, 3)
 

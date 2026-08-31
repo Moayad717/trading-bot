@@ -42,6 +42,22 @@ _MIGRATIONS = [
     ("close_original_order_id",   "TEXT"),
     ("close_original_json",       "TEXT"),
     ("sl_placed",                 "INTEGER"),  # 1=placed, 0=not placed, NULL=legacy
+    ("sl_order_id",                "TEXT"),  # real conditional-SL order id (replaces set_trading_stop)
+]
+
+# Non-unique indexes only. A UNIQUE constraint on tp_order_id/order_id was
+# requested but is deliberately NOT added here: existing data already has
+# tp_order_id values shared by two different signals (the exact bug the
+# orderLinkId change fixes going forward) — CREATE UNIQUE INDEX would fail
+# outright against that pre-existing data. Add it in a follow-up once those
+# historical rows are cleaned, not silently skip it here.
+_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_signals_status        ON signals(status)",
+    "CREATE INDEX IF NOT EXISTS idx_signals_order_id      ON signals(order_id)",
+    "CREATE INDEX IF NOT EXISTS idx_signals_tp_order_id   ON signals(tp_order_id)",
+    "CREATE INDEX IF NOT EXISTS idx_signals_sl_order_id   ON signals(sl_order_id)",
+    "CREATE INDEX IF NOT EXISTS idx_signals_of_id         ON signals(of_id)",
+    "CREATE INDEX IF NOT EXISTS idx_signals_symbol_status ON signals(symbol, status)",
 ]
 
 
@@ -55,6 +71,8 @@ def init_db_sync() -> None:
                 conn.execute(f"ALTER TABLE signals ADD COLUMN {col} {typedef}")
             except sqlite3.OperationalError:
                 pass  # column already exists
+        for stmt in _INDEXES:
+            conn.execute(stmt)
         conn.commit()
 
 
@@ -239,6 +257,44 @@ def mark_tp_completed_sync(tp_order_id: str, completion_time: str) -> bool:
         return cur.rowcount > 0
 
 
+def set_sl_order_id_sync(original_signal_id: int, sl_order_id: str) -> None:
+    """Store the real conditional-SL order id on the ORIGINAL's own row (not the
+    counter's) so a WS fill event for this order_id resolves directly to the
+    right signal in one query — no indirection through the counter's TP fill."""
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
+        conn.execute(
+            "UPDATE signals SET sl_order_id=? WHERE id=?",
+            (sl_order_id, original_signal_id),
+        )
+        conn.commit()
+
+
+def get_signal_by_sl_order_id_sync(sl_order_id: str) -> Optional[dict]:
+    """Look up the original signal whose conditional-SL order id matches."""
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.execute(
+            "SELECT * FROM signals WHERE sl_order_id = ? LIMIT 1", (sl_order_id,)
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def complete_signal_by_sl_fill_sync(sl_order_id: str, completion_time: str) -> bool:
+    """Transition ACTIVE → COMPLETED from a REAL fill of the conditional-SL order —
+    replaces the old inference ('counter's TP filled, so the original's SL must
+    have fired too') that silently marked originals closed with no matching
+    exchange execution. Returns True if a row was updated."""
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
+        cur = conn.execute(
+            "UPDATE signals SET status='completed', completion_time=? "
+            "WHERE sl_order_id=? AND status='active'",
+            (completion_time, sl_order_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
 def update_order_status_sync(order_id: str, new_status: SignalStatus) -> bool:
     """Generic sync update — used for FAILED transitions (cancelled/rejected/expired)."""
     with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
@@ -406,7 +462,8 @@ def get_original_signal_by_of_id_sync(of_id: str) -> Optional[dict]:
         conn.row_factory = sqlite3.Row
         cur = conn.execute(
             """SELECT id, order_id, symbol, action, quantity,
-                      take_profit, tp_order_id, category, close_original_order_id
+                      take_profit, tp_order_id, category, close_original_order_id,
+                      sl_order_id
                FROM signals
                WHERE of_id = ?
                  AND (pattern_type IS NULL OR pattern_type != 'COUNTER')

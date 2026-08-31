@@ -22,7 +22,7 @@ from db import (
     set_tp_order_id_sync,
     update_signal_status_sync,
 )
-from exchanges.bybit import BybitExchange
+from exchanges.bybit import BybitExchange, build_order_link_id
 from models.signal import Action, OrderType, Signal, SignalStatus
 from sources import tradingview as tv_parser
 
@@ -320,24 +320,40 @@ def _handle_exit_position_sync(payload: dict, exchange: Any) -> None:
                 )
 
         elif reason == "STD_TP_COUNTER_STILL_OPEN":
-            # 1. Remove the Partial SL from original's position (it's already closed by TP)
+            # 1. Remove the SL from original's position (it's already closed by TP).
+            # New rows: cancel the real conditional-SL order by its own id — this
+            # only touches this one original's stop. Legacy rows (no sl_order_id,
+            # SL still lives as a position-level set_trading_stop field) fall back
+            # to the old cancel_partial_sl, which wipes the whole side's stop —
+            # correct only because legacy rows never overlapped by design intent,
+            # even though in practice that's exactly what caused the bug this
+            # whole mechanism replaces.
             if original:
+                orig_action  = original["action"]
+                position_idx = 1 if orig_action == "buy" else 2
+                sl_order_id  = original.get("sl_order_id")
                 try:
-                    orig_action  = original["action"]
-                    position_idx = 1 if orig_action == "buy" else 2
-                    exchange.cancel_partial_sl(
-                        symbol=original["symbol"],
-                        position_idx=position_idx,
-                        category=original.get("category", "linear"),
-                    )
-                    logger.info(
-                        "exit_position/STD_TP_COUNTER_STILL_OPEN: removed Partial SL "
-                        "from original signal_id=%s symbol=%s",
-                        original["id"], original["symbol"],
-                    )
+                    if sl_order_id:
+                        exchange.cancel_order(sl_order_id, original["symbol"])
+                        logger.info(
+                            "exit_position/STD_TP_COUNTER_STILL_OPEN: cancelled conditional "
+                            "SL order_id=%s from original signal_id=%s symbol=%s",
+                            sl_order_id, original["id"], original["symbol"],
+                        )
+                    else:
+                        exchange.cancel_partial_sl(
+                            symbol=original["symbol"],
+                            position_idx=position_idx,
+                            category=original.get("category", "linear"),
+                        )
+                        logger.info(
+                            "exit_position/STD_TP_COUNTER_STILL_OPEN: removed legacy Partial SL "
+                            "from original signal_id=%s symbol=%s",
+                            original["id"], original["symbol"],
+                        )
                 except Exception as exc:
                     logger.warning(
-                        "exit_position/STD_TP_COUNTER_STILL_OPEN: cancel_partial_sl failed "
+                        "exit_position/STD_TP_COUNTER_STILL_OPEN: SL cancel failed "
                         "(position already closed, SL auto-removed): %s", exc,
                     )
 
@@ -364,6 +380,7 @@ def _handle_exit_position_sync(payload: dict, exchange: Any) -> None:
                 try:
                     qty        = round(float(counter.get("quantity") or 0), 1)
                     ctr_price  = counter.get("take_profit") or counter.get("stop_loss")
+                    link_id    = build_order_link_id(of_id, "CLOSE") if of_id else None
                     if qty > 0 and ctr_price is not None:
                         exchange.place_limit_close_order(
                             symbol=counter["symbol"],
@@ -372,6 +389,7 @@ def _handle_exit_position_sync(payload: dict, exchange: Any) -> None:
                             price=float(ctr_price),
                             position_idx=position_idx,
                             category=counter.get("category", "linear"),
+                            order_link_id=link_id,
                         )
                         logger.info(
                             "exit_position/STD_TP_COUNTER_STILL_OPEN: limit-closed counter "
@@ -403,15 +421,20 @@ def _handle_exit_position_sync(payload: dict, exchange: Any) -> None:
 def _handle_cancel_close_original_sync(payload: dict, exchange: Any) -> None:
     """Handle cancel_close_original alerts from Pine.
 
-    Fired when the ORIGINAL reaches its own TP while a Partial stop-loss set via
-    set_trading_stop is still attached to that position.  The original's position
-    is now closing on its TP, so the orphaned SL must be removed to avoid a
-    spurious partial-close later.
+    Fired when the ORIGINAL reaches its own TP while a stop-loss is still
+    attached to that position.  The original's position is now closing on its
+    TP, so the orphaned SL must be removed to avoid a spurious partial-close
+    later.
 
-    set_trading_stop has no separate order_id; cancellation is done by calling
-    set_trading_stop again with slSize=0 (cancel_partial_sl).  Bybit may have
-    already removed it when the position closed — that's fine, the call is
-    idempotent and any error is logged without raising.
+    New rows: the SL is a real conditional order with its own order_id
+    (sl_order_id) — cancel_order removes exactly that one order and nothing
+    else on the position. Legacy rows (SL placed before this mechanism
+    existed, sl_order_id NULL) still use the old position-level
+    set_trading_stop field, cancelled via cancel_partial_sl — that call wipes
+    every stop on the side, which was always the risk with the old design and
+    is exactly why new rows don't use it. Bybit may have already removed the
+    SL when the position closed either way — that's fine, both cancel paths
+    are idempotent and any error is logged without raising.
     """
     try:
         of_id = payload.get("id", "")
@@ -428,18 +451,27 @@ def _handle_cancel_close_original_sync(payload: dict, exchange: Any) -> None:
 
         orig_action  = original["action"]
         position_idx = 1 if orig_action == "buy" else 2
+        sl_order_id  = original.get("sl_order_id")
 
         try:
-            exchange.cancel_partial_sl(
-                symbol=original["symbol"],
-                position_idx=position_idx,
-                category=original.get("category", "linear"),
-            )
-            logger.info(
-                "cancel_close_original: Partial SL removed from original "
-                "signal_id=%s symbol=%s position_idx=%s",
-                original["id"], original["symbol"], position_idx,
-            )
+            if sl_order_id:
+                exchange.cancel_order(sl_order_id, original["symbol"])
+                logger.info(
+                    "cancel_close_original: cancelled conditional SL order_id=%s "
+                    "from original signal_id=%s symbol=%s",
+                    sl_order_id, original["id"], original["symbol"],
+                )
+            else:
+                exchange.cancel_partial_sl(
+                    symbol=original["symbol"],
+                    position_idx=position_idx,
+                    category=original.get("category", "linear"),
+                )
+                logger.info(
+                    "cancel_close_original: legacy Partial SL removed from original "
+                    "signal_id=%s symbol=%s position_idx=%s",
+                    original["id"], original["symbol"], position_idx,
+                )
         except Exception as exc:
             # Position may already be flat — SL auto-removed, no action needed.
             logger.warning(
