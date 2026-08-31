@@ -124,16 +124,45 @@ def send_telegram(text: str) -> None:
         print(f"Telegram send failed: {exc}")
 
 
+# Same pattern as exchanges.bybit.is_closing_order's role-tag matcher, but
+# used more strictly here: presence of this tag is what makes a direct
+# order-id lookup trustworthy on its own (Bybit guarantees a tag can never
+# be reused by a second, different placement — confirmed live, duplicate
+# orderLinkId is rejected outright, ErrCode 110072). The old reduceOnly flag
+# does NOT carry that same guarantee, so unlike is_closing_order() this does
+# not fall back to it — an order with reduceOnly=True but no real tag (a
+# pre-tagging legacy order) must still go through the slower independent
+# verification below, not be trusted on reduceOnly alone.
+_RELIABLE_TAG_RE = re.compile(r"_(?:TP|CTP|SL|CLOSE)\d*$")
+
+
 def check_completed_without_evidence() -> list[str]:
     """Every signal completed in the lookback window must have a real,
-    matching Bybit closing execution. No match = alert."""
+    matching Bybit closing execution. No match = alert.
+
+    Two-tier verification:
+      1. Fast path — if the signal's recorded tp_order_id/sl_order_id carries
+         a genuine orderLinkId tag (this week's fix — see BYBIT_QUIRKS.md and
+         build_order_link_id), just look that exact order up directly and
+         check it's Filled. Since Bybit itself guarantees that tag can never
+         be shared with a different placement, this is trustworthy on its
+         own — no need to re-derive anything.
+      2. Slow path — for anything without a reliable tag (signals from
+         before this week's fix), fall back to independently re-deriving
+         proof from Bybit's raw execution history by qty+side+timing,
+         exactly as before. This is deliberately NOT just "trust the
+         recorded order id" — that recorded id is exactly the thing that
+         could be wrong in the original mislink bug, so proof for untagged
+         signals has to come from evidence that doesn't depend on it.
+    """
     findings = []
     cutoff = (now_local() - timedelta(minutes=LOOKBACK_MINUTES)).isoformat()
 
     conn = sqlite3.connect(settings.DB_PATH, timeout=5)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
-        """SELECT id, symbol, action, quantity, entry_fill_time, completion_time
+        """SELECT id, symbol, action, quantity, entry_fill_time, completion_time,
+                  tp_order_id, sl_order_id
              FROM signals
             WHERE status='completed' AND completion_time >= ?""",
         (cutoff,),
@@ -146,9 +175,34 @@ def check_completed_without_evidence() -> list[str]:
     ex = BybitExchange()
     client = ex._client
 
+    # ── Fast path ────────────────────────────────────────────────────────
+    unresolved = []
+    for r in rows:
+        sig = dict(r)
+        order_id = sig.get("tp_order_id") or sig.get("sl_order_id")
+        if not order_id:
+            unresolved.append(sig)
+            continue
+        try:
+            resp = client.get_open_orders(category="linear", symbol=sig["symbol"], orderId=order_id)
+            lst = resp.get("result", {}).get("list", [])
+        except Exception:
+            lst = []
+        order = lst[0] if lst else {}
+        has_reliable_tag = bool(_RELIABLE_TAG_RE.search(str(order.get("orderLinkId") or "")))
+        if has_reliable_tag and order.get("orderStatus") == "Filled":
+            continue  # proven directly — Bybit's own tag-uniqueness guarantee backs this
+        unresolved.append(sig)
+
+    if not unresolved:
+        return findings
+
+    # ── Slow path — independent verification for anything the fast path
+    # couldn't confirm ──────────────────────────────────────────────────
+    rows = unresolved
     by_symbol: dict[str, list[dict]] = {}
     for r in rows:
-        by_symbol.setdefault(r["symbol"], []).append(dict(r))
+        by_symbol.setdefault(r["symbol"], []).append(r)
 
     for symbol, sigs in by_symbol.items():
         # The DB stores the RAW, unrounded quantity from signal parsing —
