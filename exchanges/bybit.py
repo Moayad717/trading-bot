@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from decimal import ROUND_DOWN, Decimal
 from typing import Any, Dict, List, Optional
 
@@ -28,6 +29,29 @@ def build_order_link_id(of_id: str, role: str) -> str:
     chars in production; role suffixes are at most 5 chars ("_CTP19"), well
     inside Bybit's 36-char orderLinkId limit."""
     return f"{of_id}_{role}"
+
+
+# Roles that only ever reduce a position — TP/CTP/SL/CLOSE, optionally followed
+# by a retry sequence number (_TP2, _CTP3, ...). Entries (_E/_CE) never get a
+# sequence suffix and are deliberately excluded from this pattern.
+_CLOSING_ROLE_RE = re.compile(r"_(?:TP|CTP|SL|CLOSE)\d*$")
+
+
+def is_closing_order(order: Dict[str, Any]) -> bool:
+    """True if this order can only reduce a position — never open or grow one.
+
+    Primary signal is the orderLinkId role suffix (reliable: we control what
+    we tag every order with). Falls back to Bybit's own reduceOnly flag for
+    orders that predate orderLinkId tagging or come from outside our own
+    placement code — but reduceOnly alone is NOT reliable on its own for this
+    purpose: see BYBIT_QUIRKS.md — Bybit auto-applies it to some closing
+    orders and not others depending on quota state at placement time, and a
+    plain resting order with reduceOnly unset can still be closing-only in
+    intent (before Bybit gets to classify it).
+    """
+    if _CLOSING_ROLE_RE.search(str(order.get("orderLinkId") or "")):
+        return True
+    return bool(order.get("reduceOnly"))
 
 
 class BybitExchange(BaseExchange):

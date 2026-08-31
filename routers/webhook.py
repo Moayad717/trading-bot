@@ -22,7 +22,7 @@ from db import (
     set_tp_order_id_sync,
     update_signal_status_sync,
 )
-from exchanges.bybit import BybitExchange, build_order_link_id
+from exchanges.bybit import BybitExchange, build_order_link_id, is_closing_order
 from models.signal import Action, OrderType, Signal, SignalStatus
 from sources import tradingview as tv_parser
 
@@ -109,11 +109,14 @@ def _check_net_delta(signal_create: Any, exchange: Any) -> str:
             if float(p.get("size", 0)) > 0
         )
 
-        # Signed delta from non-reduceOnly pending orders
+        # Signed delta from opening (non-closing) pending orders — see
+        # is_closing_order's docstring for why reduceOnly alone isn't reliable
+        # for this since Bybit auto-applies it inconsistently depending on
+        # quota state (BYBIT_QUIRKS.md #1).
         ord_net = sum(
             float(o.get("qty", 0)) * (1 if o.get("side") == "Buy" else -1)
             for o in open_orders
-            if not o.get("reduceOnly")
+            if not is_closing_order(o)
         )
 
         committed_net = pos_net + ord_net
@@ -188,7 +191,7 @@ def _cancel_resting_if_over_cap(signal_create: Any, exchange: Any, placed_order_
         ord_net = sum(
             float(o.get("qty", 0)) * (1 if o.get("side") == "Buy" else -1)
             for o in open_orders
-            if not o.get("reduceOnly")
+            if not is_closing_order(o)
         )
         committed_net = pos_net + ord_net
         cap_coin      = settings.NET_DELTA_CAP_PCT * equity / mark_price
@@ -197,9 +200,13 @@ def _cancel_resting_if_over_cap(signal_create: Any, exchange: Any, placed_order_
             return  # within cap — nothing to do
 
         side = "Buy" if signal_create.action == Action.BUY else "Sell"
+        # Only ever cancel opening orders here — a TP/SL/CLOSE order getting
+        # swept into this list would mean cancelling real protection just to
+        # trim directional exposure, which is a much worse outcome than the
+        # exposure this cap exists to limit.
         to_cancel = [
             o for o in open_orders
-            if not o.get("reduceOnly")
+            if not is_closing_order(o)
             and o.get("side") == side
             and o.get("orderId") != placed_order_id
         ]
