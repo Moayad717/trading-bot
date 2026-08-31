@@ -27,6 +27,36 @@ declare -A BOTS=(
     [trading-bot-aiko]=trading-bot-aiko
 )
 
+# Process-alive check: if a bot crashed and didn't come back cleanly, it
+# stops doing EVERYTHING — no new trades, no exits — completely silently.
+# Nothing else in this system watches for that.
+DEAD_BOTS=""
+for name in "${BOTS[@]}"; do
+    status="$(pm2 jlist 2>/dev/null | python3 -c "
+import json, sys
+try:
+    procs = json.load(sys.stdin)
+    for p in procs:
+        if p.get('name') == '$name':
+            print(p.get('pm2_env', {}).get('status', 'unknown'))
+            sys.exit(0)
+    print('not_found')
+except Exception:
+    print('check_failed')
+")"
+    if [ "$status" != "online" ]; then
+        DEAD_BOTS="${DEAD_BOTS}${name} (status=${status})\n"
+    fi
+done
+
+if [ -n "$DEAD_BOTS" ] && [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
+    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+        --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+        --data-urlencode "text=🚨 Bot(s) not running:
+$(echo -e "$DEAD_BOTS")
+No new trades, no exits — nothing — until this is fixed." > /dev/null
+fi
+
 SUMMARY=""
 for dir in "${!BOTS[@]}"; do
     name="${BOTS[$dir]}"
