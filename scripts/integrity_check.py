@@ -55,12 +55,24 @@ import sqlite3
 import subprocess
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import now_local, settings  # noqa: E402
 from exchanges.bybit import BybitExchange  # noqa: E402
+
+
+def _local_iso_to_utc_ms(iso: str) -> int:
+    """The DB stores naive Asia/Beirut local time (config.now_local()), but
+    Bybit's execTime is real UTC epoch millis. Tagging a local timestamp as
+    UTC directly (.replace(tzinfo=timezone.utc)) shifts it hours into the
+    future and silently excludes real, valid executions from the match
+    window — confirmed live 2026-08-31: this exact bug produced a false
+    alarm for two signals that had genuinely, correctly completed."""
+    dt_local = datetime.fromisoformat(iso).replace(tzinfo=ZoneInfo("Asia/Beirut"))
+    return int(dt_local.timestamp() * 1000)
 
 BOT_NAME = sys.argv[1] if len(sys.argv) > 1 else os.path.basename(os.getcwd())
 LOOKBACK_MINUTES = int(os.environ.get("INTEGRITY_LOOKBACK_MIN", "20"))
@@ -155,9 +167,7 @@ def check_completed_without_evidence() -> list[str]:
         start_ms = int(time.time() * 1000) - (LOOKBACK_MINUTES + 60 * 24 * 3) * 60 * 1000
         if earliest_entry:
             try:
-                start_ms = min(start_ms, int(
-                    datetime.fromisoformat(earliest_entry).replace(tzinfo=timezone.utc).timestamp() * 1000
-                ))
+                start_ms = min(start_ms, _local_iso_to_utc_ms(earliest_entry))
             except Exception:
                 pass
         end_ms = int(time.time() * 1000)
@@ -187,10 +197,7 @@ def check_completed_without_evidence() -> list[str]:
             entry_ms = 0
             if sig.get("entry_fill_time"):
                 try:
-                    entry_ms = int(
-                        datetime.fromisoformat(sig["entry_fill_time"])
-                        .replace(tzinfo=timezone.utc).timestamp() * 1000
-                    )
+                    entry_ms = _local_iso_to_utc_ms(sig["entry_fill_time"])
                 except Exception:
                     pass
             candidates = [
