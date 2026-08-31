@@ -88,6 +88,10 @@ _KNOWN_RESOLVED_DUPLICATE_TP_ORDER_IDS = {
     "48e1e0af-4124-46b2-92b2-0dc5628c16c2", "4f8b1fb0-d0f5-4a49-8294-5f65cef8e6ba",
     "50e57434-e990-4445-bc40-645f97b8d962", "72097604-2bbe-442b-8cce-4b3064cebcfc",
     "c9a307cf-f4a6-4602-999f-a8b6685c517d", "d64584ce-346a-4f63-9742-864e7fb9dc5f",
+    # aiko — found by this very check on its first real run (2026-08-31),
+    # since the original client-reported list only covered live/8003/8005.
+    "00e88293-d532-4ac2-a07e-4241a5fbf89e", "09a1b948-7b67-4a4f-bef4-339dde821f9f",
+    "11c3012d-6dde-466d-87b6-6c6eb2725313",
 }
 
 
