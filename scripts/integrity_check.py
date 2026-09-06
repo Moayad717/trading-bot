@@ -226,22 +226,34 @@ def check_completed_without_evidence() -> list[str]:
                 pass
         end_ms = int(time.time() * 1000)
 
+        # Bybit's execution/list caps each request's startTime-endTime span at
+        # 7 days (ErrCode 10001) — confirmed live 2026-09-06, a signal whose
+        # entry_fill_time was old enough pushed start_ms back ~15 days and the
+        # single unchunked request got rejected outright, failing the check
+        # for every signal on that symbol, not just the old one. Chunk into
+        # <7-day windows (6.5d margin) the same way this week's forensic
+        # scripts (investigate_mislinks.py) already had to.
+        CHUNK_MS = int(6.5 * 86400 * 1000)
         execs = []
-        cursor = ""
-        while True:
-            params = {"category": "linear", "symbol": symbol,
-                      "startTime": start_ms, "endTime": end_ms, "limit": 100}
-            if cursor:
-                params["cursor"] = cursor
-            resp = client.get_executions(**params)
-            if resp.get("retCode") != 0:
-                break
-            result = resp.get("result", {})
-            lst = result.get("list", [])
-            execs.extend(lst)
-            cursor = result.get("nextPageCursor", "")
-            if not cursor or not lst:
-                break
+        chunk_start = start_ms
+        while chunk_start < end_ms:
+            chunk_end = min(chunk_start + CHUNK_MS, end_ms)
+            cursor = ""
+            while True:
+                params = {"category": "linear", "symbol": symbol,
+                          "startTime": chunk_start, "endTime": chunk_end, "limit": 100}
+                if cursor:
+                    params["cursor"] = cursor
+                resp = client.get_executions(**params)
+                if resp.get("retCode") != 0:
+                    break
+                result = resp.get("result", {})
+                lst = result.get("list", [])
+                execs.extend(lst)
+                cursor = result.get("nextPageCursor", "")
+                if not cursor or not lst:
+                    break
+            chunk_start = chunk_end
         closing = [e for e in execs if float(e.get("closedSize", 0) or 0) > 0]
 
         used_order_ids: set[str] = set()
