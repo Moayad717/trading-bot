@@ -388,16 +388,22 @@ def get_tp_info_sync(order_id: str) -> Optional[dict]:
 
 def get_signal_by_tp_order_id_sync(tp_order_id: str) -> Optional[dict]:
     """Return the signal whose tp_order_id matches. Used by order_tracker to detect
-    COUNTER TP fills so the original can be marked COMPLETED (partial SL fired)."""
+    COUNTER TP fills so the original can be marked COMPLETED (partial SL fired),
+    and to find a completing ORIGINAL's own conditional SL (if any) so it can be
+    cancelled instead of left resting forever — see _cancel_orphaned_sl_if_any."""
     with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
         cur = conn.execute(
-            "SELECT id, pattern_type, of_id, sl_placed FROM signals WHERE tp_order_id = ? LIMIT 1",
+            """SELECT id, pattern_type, of_id, sl_placed, symbol, sl_order_id
+                 FROM signals WHERE tp_order_id = ? LIMIT 1""",
             (tp_order_id,),
         )
         row = cur.fetchone()
     if row is None:
         return None
-    return {"id": row[0], "pattern_type": row[1], "of_id": row[2], "sl_placed": row[3]}
+    return {
+        "id": row[0], "pattern_type": row[1], "of_id": row[2], "sl_placed": row[3],
+        "symbol": row[4], "sl_order_id": row[5],
+    }
 
 
 def set_sl_placed_sync(signal_id: int, placed: bool) -> None:

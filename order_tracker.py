@@ -135,6 +135,19 @@ class OrderTracker:
                 "TP filled → position completed: tp_order_id=%s symbol=%s",
                 order_id, order.get("symbol"),
             )
+            # If the signal that just completed is itself an ORIGINAL carrying
+            # its own conditional SL (placed to protect it while a counter was
+            # open), that SL is now orphaned — the position it protects is
+            # closed. Cancel it, or it rests forever. Proven gap (2026-09-12):
+            # there was no cleanup at all for the ordinary "original closes via
+            # its own TP" path — only the Pine-alert-driven cancel_close_original
+            # and exit_position paths cancelled it, and neither fires here. Every
+            # original completing this way (the everyday case) leaked one of
+            # Bybit's 10-per-symbol conditional-order slots permanently, until
+            # all 10 were exhausted and NEW originals could get no protection
+            # placed at all — confirmed live: 5 real positions sitting
+            # unprotected because of exactly this.
+            self._cancel_orphaned_sl_if_any(order_id)
             # LEGACY ONLY: rows whose original still uses the old position-level
             # set_trading_stop (sl_order_id NULL) have no fill event of their own
             # for the SL, so completion is still inferred from the counter's TP
@@ -159,6 +172,36 @@ class OrderTracker:
                     "signal_id=%s order_id=%s symbol=%s",
                     sl_signal["id"], order_id, order.get("symbol"),
                 )
+
+    def _cancel_orphaned_sl_if_any(self, tp_order_id: str) -> None:
+        """When a signal's own TP fills, if that same signal also carries a
+        still-resting conditional SL (sl_order_id) — meaning it was itself an
+        original being protected while paired with a counter — that SL no
+        longer protects anything and must be cancelled. Left alone, it rests
+        forever (conditional orders don't self-expire — see
+        BYBIT_QUIRKS.md #2), permanently consuming one of Bybit's 10-per-symbol
+        conditional-order slots. Idempotent and safe: if the order is already
+        gone (e.g. Bybit auto-cleared it for some other reason), the cancel
+        call just fails harmlessly and is logged, not raised.
+        """
+        if self._exchange is None:
+            return
+        sig = get_signal_by_tp_order_id_sync(tp_order_id)
+        if not sig or not sig.get("sl_order_id"):
+            return
+        try:
+            self._exchange.cancel_order(sig["sl_order_id"], sig["symbol"])
+            logger.info(
+                "Cancelled orphaned conditional SL order_id=%s for signal_id=%s "
+                "(closed via its own TP, sl_order_id was still resting)",
+                sig["sl_order_id"], sig["id"],
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to cancel orphaned SL order_id=%s for signal_id=%s "
+                "(may already be gone): %s",
+                sig["sl_order_id"], sig["id"], exc,
+            )
 
     def _maybe_place_tp(self, order: Dict[str, Any]) -> None:
         if self._exchange is None:
