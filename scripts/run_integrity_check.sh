@@ -21,7 +21,13 @@ else
 fi
 
 declare -A BOTS=(
-    [trading-bot-live]=trading-bot-live
+    # trading-bot-live TEMPORARILY removed (2026-09-12) — its Bybit API key
+    # expired and the process was deliberately stopped (pm2 stop) while
+    # that's renewed, so both the process-alive check and its per-bot
+    # Python check would just fire noise the whole time it's expected to be
+    # down. RESTORE this line once the key is renewed and the bot is
+    # restarted, or monitoring for it silently stays off.
+    # [trading-bot-live]=trading-bot-live
     [trading-bot-8003]=trading-bot-8003
     [trading-bot-8005]=trading-bot-8005
     [trading-bot-aiko]=trading-bot-aiko
