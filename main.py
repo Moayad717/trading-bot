@@ -128,7 +128,19 @@ async def _reconcile_positions() -> None:
                     if remaining <= 0:
                         break
 
-                    sig_qty   = min(round(float(sig["quantity"]), 3), remaining)
+                    # round_qty (qtyStep-aware) applied AFTER the min(), not
+                    # plain round(x, 3) — confirmed live 2026-09-12: LINK's
+                    # qtyStep is 0.1, and a raw signal qty like 1.7406440... or
+                    # a naked_qty remainder rounds to something like "1.395"
+                    # under plain 3-decimal rounding, which Bybit rejects
+                    # outright ("Qty invalid", ErrCode 10001) since it isn't a
+                    # valid multiple of the step. Rounding after the min()
+                    # (not before) guarantees the final value sent to Bybit is
+                    # always step-aligned regardless of which operand was
+                    # smaller.
+                    sig_qty = exchange.round_qty(
+                        min(float(sig["quantity"]), remaining), symbol, sig.get("category", "linear")
+                    )
                     raw_tp    = sig.get("take_profit")
                     tp_price  = float(raw_tp) if raw_tp is not None else fallback_tp_price
                     entry_oid = sig.get("order_id", "")
@@ -181,8 +193,9 @@ async def _reconcile_positions() -> None:
                                 sig["id"], symbol, fail_count, _TP_MAX_FAILURES, exc,
                             )
 
-                # Ghost bulk TP for qty not covered by any DB signal
-                ghost_qty = round(remaining, 3)
+                # Ghost bulk TP for qty not covered by any DB signal —
+                # qtyStep-aware rounding, same reasoning as sig_qty above.
+                ghost_qty = exchange.round_qty(remaining, symbol, "linear")
                 if ghost_qty > 0:
                     ghost_notional = ghost_qty * fallback_tp_price
                     if ghost_notional < 5.0:

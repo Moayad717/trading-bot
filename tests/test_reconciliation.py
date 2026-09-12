@@ -61,12 +61,23 @@ async def _run_n_cycles(n: int, exchange_mock, signals_by_symbol_action: dict):
             pass
 
 
-def _make_exchange(position, open_orders, place_tp_side_effect):
+def _make_exchange(position, open_orders, place_tp_side_effect, qty_step=None):
     ex = MagicMock()
     ex.get_positions.return_value = [position]
     ex.get_all_open_orders.return_value = open_orders
     ex.place_tp_order.side_effect = place_tp_side_effect
     ex.get_order_history.return_value = []
+    # Identity by default (existing tests use exact, already-clean quantities);
+    # pass qty_step to exercise real step-rounding behavior, as
+    # test_reconciliation_qty_is_rounded_to_step below does.
+    if qty_step is None:
+        ex.round_qty.side_effect = lambda qty, symbol, category="linear": qty
+    else:
+        from decimal import ROUND_DOWN, Decimal
+        def _round(qty, symbol, category="linear", _step=qty_step):
+            step_d = Decimal(str(_step))
+            return float(Decimal(str(qty)).quantize(step_d, rounding=ROUND_DOWN))
+        ex.round_qty.side_effect = _round
     return ex
 
 
@@ -168,4 +179,38 @@ def test_sl_orders_excluded_from_coverage():
         "expected the reconciler to place a real TP — the SL order at the same "
         "side+positionIdx was incorrectly counted as TP coverage, so the "
         "position never got its actual take-profit."
+    )
+
+
+def test_reconciliation_qty_is_rounded_to_step():
+    """The qty actually sent to place_tp_order must always be a valid
+    multiple of the symbol's qtyStep — not merely rounded to 3 decimal
+    places. Confirmed live 2026-09-12: a naked_qty remainder of 1.395 (not a
+    multiple of LINK's 0.1 step) was sent as-is and Bybit rejected it
+    outright ("Qty invalid", ErrCode 10001), repeating on every reconciliation
+    cycle until the 3-strike backoff gave up — leaving a signal with no TP
+    at all. round_qty must be applied AFTER the min(sig_qty, remaining), not
+    a plain round(x, 3) before it, since either operand can be the
+    non-step-aligned one.
+    """
+    position = {"symbol": "LINKUSDT", "side": "Sell", "size": "1.4", "avgPrice": "11.0"}
+    # Deliberately not a multiple of 0.1 — the exact shape of the real bug.
+    signal = [{
+        "id": 1262, "quantity": 1.7406440382941688, "take_profit": 11.88714,
+        "tp_order_id": None, "order_id": "entry-1262", "category": "linear",
+    }]
+    exchange = _make_exchange(
+        position, [], place_tp_side_effect=lambda **kw: {"order_id": "tp-ok"},
+        qty_step=0.1,
+    )
+
+    main._tp_failure_counts.clear()
+    main._tp_giveup.clear()
+    asyncio.run(_run_n_cycles(1, exchange, {("LINKUSDT", "sell"): signal}))
+
+    assert exchange.place_tp_order.call_count == 1
+    sent_qty = exchange.place_tp_order.call_args.kwargs["qty"]
+    assert (sent_qty * 10) == int(sent_qty * 10), (
+        f"qty={sent_qty} is not a valid multiple of qtyStep=0.1 — Bybit would "
+        f"reject this with 'Qty invalid' exactly as it did live on 2026-09-12."
     )
