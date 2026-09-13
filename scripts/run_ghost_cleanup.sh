@@ -22,7 +22,10 @@ if [ -f /root/telegram_alert.env ]; then
 fi
 
 declare -A BOTS=(
-    [trading-bot-live]=trading-bot-live
+    # trading-bot-live TEMPORARILY removed (2026-09-12) — same reason as
+    # run_integrity_check.sh: its Bybit API key expired and the process is
+    # stopped. RESTORE once the key is renewed and the bot is running again.
+    # [trading-bot-live]=trading-bot-live
     [trading-bot-8003]=trading-bot-8003
     [trading-bot-8005]=trading-bot-8005
     [trading-bot-aiko]=trading-bot-aiko
