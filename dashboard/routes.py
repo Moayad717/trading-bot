@@ -23,7 +23,10 @@ from db import (
     get_signals_for_stats,
     get_signals_paginated,
     get_signals_today,
+    get_sl_cutoff_sync,
     get_sl_timeframe_settings_sync,
+    interval_to_minutes,
+    set_sl_cutoff_sync,
     set_sl_timeframe_setting_sync,
 )
 from utils.session import SESSIONS, classify_sessions
@@ -100,6 +103,39 @@ async def remove_sl_timeframe_setting(interval: str) -> Dict[str, Any]:
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"no setting found for interval={interval!r}")
     return {"interval": interval, "deleted": True}
+
+
+class SLCutoffIn(BaseModel):
+    interval: str
+
+
+@router.get("/sl-cutoff", summary="Stop-loss cutoff: disable SL at/above this timeframe")
+async def get_sl_cutoff() -> Dict[str, Any]:
+    loop = asyncio.get_event_loop()
+    interval = await loop.run_in_executor(None, get_sl_cutoff_sync)
+    return {"interval": interval}
+
+
+@router.post("/sl-cutoff", summary="Set the stop-loss cutoff (e.g. \"120\" = disable SL for 2h and above)")
+async def upsert_sl_cutoff(body: SLCutoffIn) -> Dict[str, Any]:
+    interval = body.interval.strip()
+    if not interval:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="interval cannot be empty")
+    if interval_to_minutes(interval) is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"could not parse {interval!r} as a timeframe (expected e.g. \"120\", \"1D\", \"1W\")",
+        )
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, lambda: set_sl_cutoff_sync(interval))
+    return {"interval": interval}
+
+
+@router.delete("/sl-cutoff", summary="Clear the stop-loss cutoff")
+async def remove_sl_cutoff() -> Dict[str, Any]:
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, lambda: set_sl_cutoff_sync(None))
+    return {"cleared": True}
 
 
 @router.get("/signals/counts", summary="Per-status signal counts (all-time and today)")

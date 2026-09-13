@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import sqlite3
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, List, Optional
@@ -74,6 +75,45 @@ CREATE TABLE IF NOT EXISTS sl_timeframe_settings (
 );
 """
 
+# "Margin" cutoff: instead of toggling every timeframe by hand, the client can
+# set one threshold ("2 hours and above -> no SL"). Single row (id=1); no row
+# or interval=NULL means no cutoff configured. An exact match in
+# sl_timeframe_settings always wins over this — the cutoff only fills in
+# timeframes nobody has explicitly set.
+_CREATE_SL_CUTOFF_TABLE = """
+CREATE TABLE IF NOT EXISTS sl_cutoff_setting (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    interval    TEXT,
+    updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+# Minutes-per-unit for Pine's timeframe.period format ("60", "1D", "3D", "1W",
+# "1S"...). Bare digits (no suffix letter) are minutes. "H" isn't a real Pine
+# unit but accepted as a convenience since the client thinks/types in hours.
+_INTERVAL_UNIT_MINUTES = {
+    "": 1,
+    "S": 1 / 60,
+    "H": 60,
+    "D": 1440,
+    "W": 10080,
+    "M": 43200,  # ~30 days
+}
+_INTERVAL_RE = re.compile(r"^(\d+)?([SHDWM]?)$")
+
+
+def interval_to_minutes(interval: Optional[str]) -> Optional[float]:
+    """Parse a Pine timeframe.period-style string into minutes, for cutoff
+    comparisons. Returns None if it doesn't match the expected shape (never
+    guesses — an unparseable interval just can't participate in a cutoff)."""
+    if not interval:
+        return None
+    m = _INTERVAL_RE.match(interval.strip().upper())
+    if not m or not (m.group(1) or m.group(2)):
+        return None
+    num = int(m.group(1)) if m.group(1) else 1
+    return num * _INTERVAL_UNIT_MINUTES[m.group(2)]
+
 
 def init_db_sync() -> None:
     with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
@@ -81,6 +121,7 @@ def init_db_sync() -> None:
         conn.execute("PRAGMA busy_timeout=5000")
         conn.execute(_CREATE_TABLE)
         conn.execute(_CREATE_SL_SETTINGS_TABLE)
+        conn.execute(_CREATE_SL_CUTOFF_TABLE)
         for col, typedef in _MIGRATIONS:
             try:
                 conn.execute(f"ALTER TABLE signals ADD COLUMN {col} {typedef}")
@@ -93,9 +134,14 @@ def init_db_sync() -> None:
 
 def is_sl_enabled_for_interval_sync(interval: Optional[str]) -> bool:
     """Default ON (safe) — a timeframe only skips SL placement once someone
-    has explicitly turned it off. A signal with no interval at all (legacy
-    payloads that never sent one) always gets SL — there's nothing to look
-    up, so fail toward protection, not away from it."""
+    has explicitly turned it off, either per-timeframe or via the cutoff
+    below. A signal with no interval at all (legacy payloads that never sent
+    one) always gets SL — there's nothing to look up, so fail toward
+    protection, not away from it.
+
+    Precedence: an exact per-timeframe entry always wins (explicit beats
+    inferred). Only when nothing explicit is set for this interval do we
+    fall back to the cutoff rule."""
     if not interval:
         return True
     with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
@@ -104,7 +150,22 @@ def is_sl_enabled_for_interval_sync(interval: Optional[str]) -> bool:
             (interval,),
         )
         row = cur.fetchone()
-    return True if row is None else bool(row[0])
+        if row is not None:
+            return bool(row[0])
+
+        cutoff_row = conn.execute(
+            "SELECT interval FROM sl_cutoff_setting WHERE id = 1"
+        ).fetchone()
+
+    if cutoff_row is None or not cutoff_row[0]:
+        return True
+
+    this_minutes = interval_to_minutes(interval)
+    cutoff_minutes = interval_to_minutes(cutoff_row[0])
+    if this_minutes is None or cutoff_minutes is None:
+        return True  # can't compare -> fail toward protection
+
+    return this_minutes < cutoff_minutes
 
 
 def get_sl_timeframe_settings_sync() -> list[dict]:
@@ -134,6 +195,29 @@ def delete_sl_timeframe_setting_sync(interval: str) -> bool:
         cur = conn.execute("DELETE FROM sl_timeframe_settings WHERE interval = ?", (interval,))
         conn.commit()
         return cur.rowcount > 0
+
+
+def get_sl_cutoff_sync() -> Optional[str]:
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
+        cur = conn.execute("SELECT interval FROM sl_cutoff_setting WHERE id = 1")
+        row = cur.fetchone()
+    return row[0] if row and row[0] else None
+
+
+def set_sl_cutoff_sync(interval: Optional[str]) -> None:
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
+        if interval:
+            conn.execute(
+                """INSERT INTO sl_cutoff_setting (id, interval, updated_at)
+                   VALUES (1, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(id) DO UPDATE SET
+                       interval = excluded.interval,
+                       updated_at = CURRENT_TIMESTAMP""",
+                (interval,),
+            )
+        else:
+            conn.execute("DELETE FROM sl_cutoff_setting WHERE id = 1")
+        conn.commit()
 
 
 @asynccontextmanager

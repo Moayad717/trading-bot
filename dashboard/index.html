@@ -238,6 +238,13 @@
         .sl-empty { color: var(--muted); font-size: .82rem; padding: .5rem 0; }
         .sl-add-row { display: flex; gap: .5rem; margin-top: 1rem; }
         .sl-add-row input { flex: 1; max-width: 220px; }
+        .sl-cutoff-row {
+            display: flex; align-items: center; gap: .75rem; flex-wrap: wrap;
+            padding-bottom: 1rem; margin-bottom: 1rem; border-bottom: 1px solid var(--border);
+        }
+        .sl-cutoff-row input { max-width: 140px; }
+        .sl-cutoff-current { color: var(--muted); font-size: .82rem; }
+        .sl-cutoff-current b { color: var(--text); }
     </style>
 </head>
 <body>
@@ -414,6 +421,12 @@
     <div class="panel">
         <div class="panel-header"><span class="panel-title">Per-timeframe protection switch</span></div>
         <div style="padding: 1rem 1.25rem;">
+            <div class="sl-cutoff-row">
+                <span class="sl-cutoff-current" id="sl-cutoff-current">Loading…</span>
+                <input type="text" id="sl-cutoff-interval" class="filter-input" placeholder="e.g. 120 (2h), 1D" />
+                <button class="qbtn" onclick="setSlCutoff()">Set cutoff</button>
+                <button class="qbtn" onclick="clearSlCutoff()">Clear</button>
+            </div>
             <div id="sl-settings-list"><div class="sl-empty">Loading…</div></div>
             <div class="sl-add-row">
                 <input type="text" id="sl-new-interval" class="filter-input" placeholder="e.g. 5, 15, 60, 1D" />
@@ -805,8 +818,47 @@ async function removeSlTimeframe(interval) {
     loadSlSettings();
 }
 
+// ── Stop-loss cutoff ("margin"): disable SL at/above one timeframe ─────────
+async function loadSlCutoff() {
+    const el = document.getElementById('sl-cutoff-current');
+    try {
+        const d = await fetch('/dashboard/sl-cutoff').then(r => r.json());
+        el.innerHTML = d.interval
+            ? `Cutoff: no SL at/above <b>${escapeHtml(d.interval)}</b>`
+            : 'No cutoff set — only the switches below apply.';
+    } catch(e) {
+        el.textContent = 'Failed to load.';
+    }
+}
+
+async function setSlCutoff() {
+    const input = document.getElementById('sl-cutoff-interval');
+    const interval = input.value.trim();
+    if (!interval) return;
+    const res = await fetch('/dashboard/sl-cutoff', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({interval}),
+    });
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(err.detail || 'Failed to set cutoff.');
+        return;
+    }
+    input.value = '';
+    loadSlCutoff();
+}
+
+async function clearSlCutoff() {
+    await fetch('/dashboard/sl-cutoff', {method: 'DELETE'});
+    loadSlCutoff();
+}
+
 document.getElementById('sl-new-interval').addEventListener('keydown', e => {
     if (e.key === 'Enter') addSlTimeframe();
+});
+document.getElementById('sl-cutoff-interval').addEventListener('keydown', e => {
+    if (e.key === 'Enter') setSlCutoff();
 });
 
 // ── Init ─────────────────────────────────────────────────────────────────────
@@ -815,6 +867,7 @@ refresh().then(startCountdown);
 loadSummary();
 loadApiKeyBadge();
 loadSlSettings();
+loadSlCutoff();
 
 if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/dashboard/sw.js', {scope:'/dashboard/'});
