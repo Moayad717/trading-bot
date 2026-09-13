@@ -15,6 +15,7 @@ from db import (
     get_signal_by_order_id_sync,
     get_signal_by_sl_order_id_sync,
     get_signal_by_tp_order_id_sync,
+    is_sl_enabled_for_interval_sync,
     link_auto_tp_sync,
     mark_entry_filled_sync,
     mark_tp_completed_sync,
@@ -330,6 +331,28 @@ class OrderTracker:
             logger.warning(
                 "COUNTER fill: no active original signal for of_id=%s order_id=%s",
                 of_id, order_id,
+            )
+            return
+
+        # Per-timeframe SL on/off switch (client-requested — some timeframes
+        # perform better without a stop-loss). Checked against the ORIGINAL's
+        # own interval, since that's the trade whose risk profile is being
+        # decided, not the counter's. Default is enabled — see
+        # is_sl_enabled_for_interval_sync's docstring for why unconfigured
+        # timeframes fail toward protection.
+        #
+        # Reuses the exact sl_placed=0 semantics Case A already established
+        # below ("original already closed -> counter runs unpaired, no
+        # completion inferred from it") — this is genuinely the same
+        # downstream state ("no SL exists for this pairing"), just reached
+        # for a different reason (a deliberate setting, not the original
+        # already being closed), so no new handling is needed anywhere else.
+        if not is_sl_enabled_for_interval_sync(original.get("interval")):
+            set_sl_placed_sync(counter["id"], placed=False)
+            logger.info(
+                "close_original: SL disabled for interval=%s (per-timeframe setting) — "
+                "original_signal_id=%s of_id=%s runs with take-profit only, no stop-loss.",
+                original.get("interval"), original["id"], of_id,
             )
             return
 

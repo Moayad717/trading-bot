@@ -7,10 +7,12 @@ from datetime import datetime, timedelta
 from math import ceil
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel
 
 from db import (
+    delete_sl_timeframe_setting_sync,
     get_all_signals,
     get_all_signals_for_summary,
     get_daily_report,
@@ -21,6 +23,8 @@ from db import (
     get_signals_for_stats,
     get_signals_paginated,
     get_signals_today,
+    get_sl_timeframe_settings_sync,
+    set_sl_timeframe_setting_sync,
 )
 from utils.session import SESSIONS, classify_sessions
 
@@ -65,6 +69,37 @@ async def api_key_info() -> Dict[str, Any]:
         "expired_at": expired_at,
         "permanent":  permanent,
     }
+
+
+class SLTimeframeSettingIn(BaseModel):
+    interval: str
+    sl_enabled: bool
+
+
+@router.get("/sl-timeframe-settings", summary="Per-timeframe stop-loss on/off switches")
+async def list_sl_timeframe_settings() -> Dict[str, Any]:
+    loop = asyncio.get_event_loop()
+    settings_list = await loop.run_in_executor(None, get_sl_timeframe_settings_sync)
+    return {"settings": settings_list}
+
+
+@router.post("/sl-timeframe-settings", summary="Add or update a timeframe's stop-loss switch")
+async def upsert_sl_timeframe_setting(body: SLTimeframeSettingIn) -> Dict[str, Any]:
+    interval = body.interval.strip()
+    if not interval:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="interval cannot be empty")
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, lambda: set_sl_timeframe_setting_sync(interval, body.sl_enabled))
+    return {"interval": interval, "sl_enabled": body.sl_enabled}
+
+
+@router.delete("/sl-timeframe-settings/{interval}", summary="Remove a timeframe's switch (reverts to default: enabled)")
+async def remove_sl_timeframe_setting(interval: str) -> Dict[str, Any]:
+    loop = asyncio.get_event_loop()
+    deleted = await loop.run_in_executor(None, lambda: delete_sl_timeframe_setting_sync(interval))
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"no setting found for interval={interval!r}")
+    return {"interval": interval, "deleted": True}
 
 
 @router.get("/signals/counts", summary="Per-status signal counts (all-time and today)")

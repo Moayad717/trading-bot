@@ -209,6 +209,35 @@
         .ic-label { font-size: .68rem; font-weight: 600; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin-bottom: .5rem; }
         .ic-value { font-size: 1.1rem; font-weight: 800; color: var(--indigo); }
         .ic-sub   { font-size: .72rem; color: var(--muted); margin-top: .25rem; }
+
+        /* Per-timeframe SL toggle switches */
+        .sl-row {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: .6rem 0; border-bottom: 1px solid var(--border);
+        }
+        .sl-row:last-child { border-bottom: none; }
+        .sl-interval { font-weight: 700; font-size: .9rem; }
+        .sl-controls { display: flex; align-items: center; gap: .75rem; }
+        .sl-switch { position: relative; width: 42px; height: 22px; flex-shrink: 0; }
+        .sl-switch input { opacity: 0; width: 0; height: 0; }
+        .sl-slider {
+            position: absolute; cursor: pointer; inset: 0; background: var(--red);
+            border-radius: 22px; transition: background .2s;
+        }
+        .sl-slider::before {
+            content: ""; position: absolute; height: 16px; width: 16px; left: 3px; bottom: 3px;
+            background: #fff; border-radius: 50%; transition: transform .2s;
+        }
+        .sl-switch input:checked + .sl-slider { background: var(--green); }
+        .sl-switch input:checked + .sl-slider::before { transform: translateX(20px); }
+        .sl-remove {
+            background: none; border: none; color: var(--muted); cursor: pointer;
+            font-size: .85rem; padding: 0 .25rem;
+        }
+        .sl-remove:hover { color: var(--red); }
+        .sl-empty { color: var(--muted); font-size: .82rem; padding: .5rem 0; }
+        .sl-add-row { display: flex; gap: .5rem; margin-top: 1rem; }
+        .sl-add-row input { flex: 1; max-width: 220px; }
     </style>
 </head>
 <body>
@@ -377,6 +406,19 @@
             <div class="ic"><div class="ic-label">Best Rule</div><div class="ic-value" id="sum-rule">—</div><div class="ic-sub">highest same-day rate</div></div>
             <div class="ic"><div class="ic-label">Best Session</div><div class="ic-value" id="sum-session">—</div><div class="ic-sub">highest same-day rate</div></div>
             <div class="ic"><div class="ic-label">Best Combination</div><div class="ic-value" id="sum-combo" style="font-size:.9rem">—</div><div class="ic-sub">direction · rule · session</div></div>
+        </div>
+    </div>
+
+    <!-- ── Section: Stop-Loss by Timeframe ──────────────────────────────── -->
+    <div class="section-label">Stop-Loss by Timeframe</div>
+    <div class="panel">
+        <div class="panel-header"><span class="panel-title">Per-timeframe protection switch</span></div>
+        <div style="padding: 1rem 1.25rem;">
+            <div id="sl-settings-list"><div class="sl-empty">Loading…</div></div>
+            <div class="sl-add-row">
+                <input type="text" id="sl-new-interval" class="filter-input" placeholder="e.g. 5, 15, 60, 1D" />
+                <button class="qbtn" onclick="addSlTimeframe()">+ Add timeframe</button>
+            </div>
         </div>
     </div>
 
@@ -702,11 +744,77 @@ async function loadApiKeyBadge() {
     } catch(e) { /* silently ignore */ }
 }
 
+// ── Per-timeframe stop-loss switches ────────────────────────────────────────
+function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+async function loadSlSettings() {
+    const list = document.getElementById('sl-settings-list');
+    try {
+        const d = await fetch('/dashboard/sl-timeframe-settings').then(r => r.json());
+        const rows = d.settings || [];
+        if (rows.length === 0) {
+            list.innerHTML = '<div class="sl-empty">No timeframes configured yet — every timeframe gets a stop-loss by default. Add one below only to turn it OFF for that timeframe.</div>';
+            return;
+        }
+        list.innerHTML = rows.map(r => `
+            <div class="sl-row">
+                <span class="sl-interval">${escapeHtml(r.interval)}</span>
+                <div class="sl-controls">
+                    <span style="font-size:.75rem;color:var(--muted)">${r.sl_enabled ? 'SL on' : 'SL off'}</span>
+                    <label class="sl-switch">
+                        <input type="checkbox" ${r.sl_enabled ? 'checked' : ''}
+                               onchange="toggleSlTimeframe('${escapeHtml(r.interval)}', this.checked)">
+                        <span class="sl-slider"></span>
+                    </label>
+                    <button class="sl-remove" title="Remove (reverts to default: on)"
+                            onclick="removeSlTimeframe('${escapeHtml(r.interval)}')">✕</button>
+                </div>
+            </div>
+        `).join('');
+    } catch(e) {
+        list.innerHTML = '<div class="sl-empty">Failed to load.</div>';
+    }
+}
+
+async function toggleSlTimeframe(interval, enabled) {
+    await fetch('/dashboard/sl-timeframe-settings', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({interval, sl_enabled: enabled}),
+    });
+    loadSlSettings();
+}
+
+async function addSlTimeframe() {
+    const input = document.getElementById('sl-new-interval');
+    const interval = input.value.trim();
+    if (!interval) return;
+    await fetch('/dashboard/sl-timeframe-settings', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({interval, sl_enabled: false}),
+    });
+    input.value = '';
+    loadSlSettings();
+}
+
+async function removeSlTimeframe(interval) {
+    await fetch('/dashboard/sl-timeframe-settings/' + encodeURIComponent(interval), {method: 'DELETE'});
+    loadSlSettings();
+}
+
+document.getElementById('sl-new-interval').addEventListener('keydown', e => {
+    if (e.key === 'Enter') addSlTimeframe();
+});
+
 // ── Init ─────────────────────────────────────────────────────────────────────
 document.querySelector('th[data-col="timestamp"]').classList.add('sort-desc');
 refresh().then(startCountdown);
 loadSummary();
 loadApiKeyBadge();
+loadSlSettings();
 
 if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/dashboard/sw.js', {scope:'/dashboard/'});

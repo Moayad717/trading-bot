@@ -60,12 +60,27 @@ _INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_signals_symbol_status ON signals(symbol, status)",
 ]
 
+# Per-timeframe stop-loss on/off switch. One row per interval value (matches
+# the free-text `interval` string Pine sends, e.g. "1", "1S", "60" — not a
+# fixed enum, since the client wants to type in any timeframe himself).
+# A timeframe with NO row here is treated as enabled — see
+# is_sl_enabled_for_interval_sync. Per-bot: each bot has its own signals.db,
+# so this table naturally lives per-account with zero shared-state risk.
+_CREATE_SL_SETTINGS_TABLE = """
+CREATE TABLE IF NOT EXISTS sl_timeframe_settings (
+    interval    TEXT PRIMARY KEY,
+    sl_enabled  INTEGER NOT NULL DEFAULT 1,
+    updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
 
 def init_db_sync() -> None:
     with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")
         conn.execute(_CREATE_TABLE)
+        conn.execute(_CREATE_SL_SETTINGS_TABLE)
         for col, typedef in _MIGRATIONS:
             try:
                 conn.execute(f"ALTER TABLE signals ADD COLUMN {col} {typedef}")
@@ -74,6 +89,51 @@ def init_db_sync() -> None:
         for stmt in _INDEXES:
             conn.execute(stmt)
         conn.commit()
+
+
+def is_sl_enabled_for_interval_sync(interval: Optional[str]) -> bool:
+    """Default ON (safe) — a timeframe only skips SL placement once someone
+    has explicitly turned it off. A signal with no interval at all (legacy
+    payloads that never sent one) always gets SL — there's nothing to look
+    up, so fail toward protection, not away from it."""
+    if not interval:
+        return True
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
+        cur = conn.execute(
+            "SELECT sl_enabled FROM sl_timeframe_settings WHERE interval = ?",
+            (interval,),
+        )
+        row = cur.fetchone()
+    return True if row is None else bool(row[0])
+
+
+def get_sl_timeframe_settings_sync() -> list[dict]:
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.execute(
+            "SELECT interval, sl_enabled, updated_at FROM sl_timeframe_settings ORDER BY interval"
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def set_sl_timeframe_setting_sync(interval: str, sl_enabled: bool) -> None:
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
+        conn.execute(
+            """INSERT INTO sl_timeframe_settings (interval, sl_enabled, updated_at)
+               VALUES (?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(interval) DO UPDATE SET
+                   sl_enabled = excluded.sl_enabled,
+                   updated_at = CURRENT_TIMESTAMP""",
+            (interval, 1 if sl_enabled else 0),
+        )
+        conn.commit()
+
+
+def delete_sl_timeframe_setting_sync(interval: str) -> bool:
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
+        cur = conn.execute("DELETE FROM sl_timeframe_settings WHERE interval = ?", (interval,))
+        conn.commit()
+        return cur.rowcount > 0
 
 
 @asynccontextmanager
@@ -469,7 +529,7 @@ def get_original_signal_by_of_id_sync(of_id: str) -> Optional[dict]:
         cur = conn.execute(
             """SELECT id, order_id, symbol, action, quantity,
                       take_profit, tp_order_id, category, close_original_order_id,
-                      sl_order_id
+                      sl_order_id, interval
                FROM signals
                WHERE of_id = ?
                  AND (pattern_type IS NULL OR pattern_type != 'COUNTER')
