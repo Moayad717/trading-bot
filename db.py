@@ -88,6 +88,19 @@ CREATE TABLE IF NOT EXISTS sl_cutoff_setting (
 );
 """
 
+# Master kill switch: "remove every SL, keep TP/limits" (client-requested,
+# 2026-09-13). When off, NO stop-loss is ever placed for ANY timeframe —
+# takes precedence over both the per-timeframe switches and the cutoff, and
+# over the no-interval fail-safe, since the client's intent here is total and
+# unconditional. Single row (id=1); no row means enabled (normal behavior).
+_CREATE_SL_MASTER_SWITCH_TABLE = """
+CREATE TABLE IF NOT EXISTS sl_master_switch (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    sl_enabled  INTEGER NOT NULL DEFAULT 1,
+    updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
 # Minutes-per-unit for Pine's timeframe.period format ("60", "1D", "3D", "1W",
 # "1S"...). Bare digits (no suffix letter) are minutes. "H" isn't a real Pine
 # unit but accepted as a convenience since the client thinks/types in hours.
@@ -122,6 +135,7 @@ def init_db_sync() -> None:
         conn.execute(_CREATE_TABLE)
         conn.execute(_CREATE_SL_SETTINGS_TABLE)
         conn.execute(_CREATE_SL_CUTOFF_TABLE)
+        conn.execute(_CREATE_SL_MASTER_SWITCH_TABLE)
         for col, typedef in _MIGRATIONS:
             try:
                 conn.execute(f"ALTER TABLE signals ADD COLUMN {col} {typedef}")
@@ -139,12 +153,24 @@ def is_sl_enabled_for_interval_sync(interval: Optional[str]) -> bool:
     one) always gets SL — there's nothing to look up, so fail toward
     protection, not away from it.
 
-    Precedence: an exact per-timeframe entry always wins (explicit beats
-    inferred). Only when nothing explicit is set for this interval do we
-    fall back to the cutoff rule."""
-    if not interval:
-        return True
+    Precedence, highest first:
+      1. Master switch off -> SL disabled everywhere, no exceptions (beats
+         even an explicit per-timeframe "on" and the no-interval fail-safe —
+         "remove every SL" means every SL).
+      2. An exact per-timeframe entry (explicit beats inferred).
+      3. The cutoff rule.
+      4. Default: enabled.
+    """
     with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
+        master_row = conn.execute(
+            "SELECT sl_enabled FROM sl_master_switch WHERE id = 1"
+        ).fetchone()
+        if master_row is not None and not bool(master_row[0]):
+            return False
+
+        if not interval:
+            return True
+
         cur = conn.execute(
             "SELECT sl_enabled FROM sl_timeframe_settings WHERE interval = ?",
             (interval,),
@@ -217,6 +243,26 @@ def set_sl_cutoff_sync(interval: Optional[str]) -> None:
             )
         else:
             conn.execute("DELETE FROM sl_cutoff_setting WHERE id = 1")
+        conn.commit()
+
+
+def get_sl_master_switch_sync() -> bool:
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
+        cur = conn.execute("SELECT sl_enabled FROM sl_master_switch WHERE id = 1")
+        row = cur.fetchone()
+    return True if row is None else bool(row[0])
+
+
+def set_sl_master_switch_sync(enabled: bool) -> None:
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
+        conn.execute(
+            """INSERT INTO sl_master_switch (id, sl_enabled, updated_at)
+               VALUES (1, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(id) DO UPDATE SET
+                   sl_enabled = excluded.sl_enabled,
+                   updated_at = CURRENT_TIMESTAMP""",
+            (1 if enabled else 0,),
+        )
         conn.commit()
 
 

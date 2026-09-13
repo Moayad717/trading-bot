@@ -24,9 +24,11 @@ from db import (
     get_signals_paginated,
     get_signals_today,
     get_sl_cutoff_sync,
+    get_sl_master_switch_sync,
     get_sl_timeframe_settings_sync,
     interval_to_minutes,
     set_sl_cutoff_sync,
+    set_sl_master_switch_sync,
     set_sl_timeframe_setting_sync,
 )
 from utils.session import SESSIONS, classify_sessions
@@ -136,6 +138,24 @@ async def remove_sl_cutoff() -> Dict[str, Any]:
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, lambda: set_sl_cutoff_sync(None))
     return {"cleared": True}
+
+
+class SLMasterSwitchIn(BaseModel):
+    sl_enabled: bool
+
+
+@router.get("/sl-master-switch", summary="Master kill switch: is SL enabled at all")
+async def get_sl_master_switch() -> Dict[str, Any]:
+    loop = asyncio.get_event_loop()
+    enabled = await loop.run_in_executor(None, get_sl_master_switch_sync)
+    return {"sl_enabled": enabled}
+
+
+@router.post("/sl-master-switch", summary="Flip the master kill switch (off = no SL anywhere, TP/limits unaffected)")
+async def upsert_sl_master_switch(body: SLMasterSwitchIn) -> Dict[str, Any]:
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, lambda: set_sl_master_switch_sync(body.sl_enabled))
+    return {"sl_enabled": body.sl_enabled}
 
 
 @router.get("/signals/counts", summary="Per-status signal counts (all-time and today)")

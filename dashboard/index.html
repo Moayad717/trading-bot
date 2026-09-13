@@ -245,6 +245,11 @@
         .sl-cutoff-row input { max-width: 140px; }
         .sl-cutoff-current { color: var(--muted); font-size: .82rem; }
         .sl-cutoff-current b { color: var(--text); }
+        .sl-master-row {
+            display: flex; align-items: center; gap: .75rem;
+            padding-bottom: 1rem; margin-bottom: 1rem; border-bottom: 1px solid var(--border);
+        }
+        #sl-master-label { font-size: .85rem; font-weight: 600; }
     </style>
 </head>
 <body>
@@ -421,6 +426,13 @@
     <div class="panel">
         <div class="panel-header"><span class="panel-title">Per-timeframe protection switch</span></div>
         <div style="padding: 1rem 1.25rem;">
+            <div class="sl-master-row" id="sl-master-row">
+                <label class="sl-switch">
+                    <input type="checkbox" id="sl-master-toggle" onchange="toggleSlMasterSwitch(this.checked)">
+                    <span class="sl-slider"></span>
+                </label>
+                <span id="sl-master-label">Loading…</span>
+            </div>
             <div class="sl-cutoff-row">
                 <span class="sl-cutoff-current" id="sl-cutoff-current">Loading…</span>
                 <input type="text" id="sl-cutoff-interval" class="filter-input" placeholder="e.g. 120 (2h), 1D" />
@@ -818,6 +830,31 @@ async function removeSlTimeframe(interval) {
     loadSlSettings();
 }
 
+// ── Master kill switch: no SL anywhere, TP/limits unaffected ───────────────
+async function loadSlMasterSwitch() {
+    const toggle = document.getElementById('sl-master-toggle');
+    const label = document.getElementById('sl-master-label');
+    try {
+        const d = await fetch('/dashboard/sl-master-switch').then(r => r.json());
+        toggle.checked = d.sl_enabled;
+        label.textContent = d.sl_enabled
+            ? 'Stop-loss placement: ON'
+            : 'Stop-loss placement: OFF for ALL timeframes (take-profit & limit orders unaffected)';
+        label.style.color = d.sl_enabled ? 'var(--text)' : 'var(--red)';
+    } catch(e) {
+        label.textContent = 'Failed to load.';
+    }
+}
+
+async function toggleSlMasterSwitch(enabled) {
+    await fetch('/dashboard/sl-master-switch', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({sl_enabled: enabled}),
+    });
+    loadSlMasterSwitch();
+}
+
 // ── Stop-loss cutoff ("margin"): disable SL at/above one timeframe ─────────
 async function loadSlCutoff() {
     const el = document.getElementById('sl-cutoff-current');
@@ -868,6 +905,7 @@ loadSummary();
 loadApiKeyBadge();
 loadSlSettings();
 loadSlCutoff();
+loadSlMasterSwitch();
 
 if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/dashboard/sw.js', {scope:'/dashboard/'});

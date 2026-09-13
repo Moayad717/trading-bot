@@ -199,6 +199,62 @@ def test_sl_placed_for_enabled_timeframe(tmp_db):
     exchange.place_conditional_sl.assert_called_once()
 
 
+# ── db.py layer: master kill switch ─────────────────────────────────────────
+
+def test_master_switch_enabled_by_default(tmp_db):
+    assert db.get_sl_master_switch_sync() is True
+
+
+def test_master_switch_set_and_read(tmp_db):
+    db.set_sl_master_switch_sync(False)
+    assert db.get_sl_master_switch_sync() is False
+
+
+def test_master_switch_overwrite_not_duplicate(tmp_db):
+    db.set_sl_master_switch_sync(False)
+    db.set_sl_master_switch_sync(True)
+    assert db.get_sl_master_switch_sync() is True
+
+
+def test_master_switch_off_beats_everything(tmp_db):
+    """'Remove every SL' means every SL: beats an explicit per-timeframe
+    'on', the cutoff, and even the no-interval fail-safe."""
+    db.set_sl_timeframe_setting_sync("5", True)  # explicit ON
+    db.set_sl_cutoff_sync("1")                   # cutoff would also allow "5" through
+    db.set_sl_master_switch_sync(False)
+
+    assert db.is_sl_enabled_for_interval_sync("5") is False
+    assert db.is_sl_enabled_for_interval_sync("1D") is False
+    assert db.is_sl_enabled_for_interval_sync(None) is False  # even the missing-interval fail-safe
+
+
+def test_master_switch_on_restores_normal_rules(tmp_db):
+    db.set_sl_master_switch_sync(False)
+    db.set_sl_master_switch_sync(True)
+    assert db.is_sl_enabled_for_interval_sync("5") is True
+    assert db.is_sl_enabled_for_interval_sync(None) is True
+
+
+def test_master_switch_off_end_to_end(tmp_db):
+    """Same real entry point as the other end-to-end tests — proves the kill
+    switch is actually wired into order placement."""
+    db.set_sl_master_switch_sync(False)
+
+    orig_id = insert_signal(tmp_db, action="buy", of_id="flowD", quantity=2.0,
+                             symbol="LINKUSDT", category="linear")
+    _set_columns(tmp_db, orig_id, interval="5")
+
+    ctr_id = insert_signal(tmp_db, action="sell", of_id="flowD", pattern_type="COUNTER",
+                            quantity=2.0, symbol="LINKUSDT")
+    _set_columns(tmp_db, ctr_id, order_id="ctr-entry-order-4", take_profit=12.0)
+
+    exchange = MagicMock()
+    tracker = OrderTracker(exchange=exchange)
+    tracker._maybe_place_close_original({"orderId": "ctr-entry-order-4", "symbol": "LINKUSDT"})
+
+    exchange.place_conditional_sl.assert_not_called()
+
+
 def test_cutoff_skips_sl_end_to_end(tmp_db):
     """Same real entry point as the per-timeframe tests above, but driven by
     the cutoff instead of an exact-match row — proves the cutoff is actually
