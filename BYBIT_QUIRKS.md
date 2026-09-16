@@ -33,8 +33,8 @@ engine decides what happens — **your `reduceOnly` value is irrelevant**:
 **Practical consequence:** you cannot force a Bybit hedge-mode closing
 order to *not* be reduce-only by omitting the flag. "Remove reduceOnly
 from all orders" is not achievable via order parameters for orders that
-can only close a position. If a client asks for this, the real fix is
-almost never the flag — it's whatever is consuming the reduce budget
+can only close a position. If this is requested, the real fix is almost
+never the flag — it's whatever is consuming the reduce budget
 (duplicate/stale resting orders, an old bulk order that should have been
 split up, etc.).
 
@@ -120,16 +120,16 @@ all — 5 real positions sat unprotected before this was caught.
 simultaneous same-symbol flows each needing their own individual
 conditional order (stop-loss or otherwise) WILL hit this ceiling —
 regardless of how clean the cleanup logic is, since the ceiling reflects
-genuine concurrent need, not leakage. If a client's strategy on one symbol
+genuine concurrent need, not leakage. If a strategy on one symbol
 regularly runs close to or above this, that's a real capacity conversation,
 not a bug to chase — the fix would need to be architectural (fewer,
 larger conditional orders covering several flows at once — which
 reintroduces the exact "individual TP/SL tracking" problem items 1 and 5
 elsewhere in this project exist specifically to avoid), not a config change.
 
-## 7. Stop-loss permanently removed from the system (client decision, 2026-09-16)
+## 7. Stop-loss permanently removed from the system (2026-09-16)
 
-Client analysed Bybit executions on both bots (8003, 8005), 2026-09-06 to
+Analysis of Bybit executions on both bots (8003, 8005), 2026-09-06 to
 2026-09-13, every entry judged against its own price, never the position
 average:
 

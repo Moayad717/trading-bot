@@ -426,16 +426,16 @@ def _handle_exit_position_sync(payload: dict, exchange: Any) -> None:
 
 
 def _handle_cancel_close_original_sync(payload: dict, exchange: Any) -> None:
-    """PERMANENTLY IGNORED — client decision 2026-09-16 (spec point 2): stop-loss
-    is removed from the system, so there is never an SL left to cancel. This
-    used to cancel the original's conditional SL when the original reached its
-    own TP first. Kept as a named no-op (rather than removed) so the action
-    dispatch in tradingview_webhook stays self-documenting about every action
-    type Pine can send, current Pine behavior included."""
+    """PERMANENTLY IGNORED — 2026-09-16: stop-loss is removed from the
+    system, so there is never an SL left to cancel. This used to cancel the
+    original's conditional SL when the original reached its own TP first.
+    Kept as a named no-op (rather than removed) so the action dispatch in
+    tradingview_webhook stays self-documenting about every action type Pine
+    can send, current Pine behavior included."""
     of_id = payload.get("id", "")
     logger.info(
-        "cancel_close_original: ignored (SL permanently disabled, client "
-        "decision 2026-09-16) — of_id=%s", of_id,
+        "cancel_close_original: ignored (SL permanently removed 2026-09-16) "
+        "— of_id=%s", of_id,
     )
 
 

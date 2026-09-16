@@ -31,7 +31,7 @@ Four checks:
      already considers critical.
 
   4. A NEW duplicate tp_order_id group — two different signals sharing one
-     take-profit order id, the original client-reported mislink bug
+     take-profit order id, the original reported mislink bug
      (link_auto_tp_sync's quantity-based guessing). All known-and-already-
      resolved cases from before 2026-08-31 are excluded via
      _KNOWN_RESOLVED_DUPLICATE_TP_ORDER_IDS below (their status/timestamps
@@ -101,7 +101,7 @@ _KNOWN_RESOLVED_DUPLICATE_TP_ORDER_IDS = {
     "50e57434-e990-4445-bc40-645f97b8d962", "72097604-2bbe-442b-8cce-4b3064cebcfc",
     "c9a307cf-f4a6-4602-999f-a8b6685c517d", "d64584ce-346a-4f63-9742-864e7fb9dc5f",
     # aiko — found by this very check on its first real run (2026-08-31),
-    # since the original client-reported list only covered live/8003/8005.
+    # since the original reported list only covered live/8003/8005.
     "00e88293-d532-4ac2-a07e-4241a5fbf89e", "09a1b948-7b67-4a4f-bef4-339dde821f9f",
     "11c3012d-6dde-466d-87b6-6c6eb2725313",
 }
@@ -357,7 +357,7 @@ def check_critical_logs() -> list[str]:
 
 def check_new_duplicate_tp_order_id() -> list[str]:
     """Alert only on a duplicate tp_order_id NOT already in the known-resolved
-    set — a genuinely new occurrence of the original client-reported mislink
+    set — a genuinely new occurrence of the original reported mislink
     bug, not the historical cases already corrected."""
     conn = sqlite3.connect(settings.DB_PATH, timeout=5)
     rows = conn.execute("""

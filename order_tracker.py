@@ -39,7 +39,7 @@ class OrderTracker:
 
     Entry fill  → status ACTIVE, entry_fill_time set, TP placed, tp_order_id stored.
                   For COUNTER entries: no stop-loss is placed on the original —
-                  stop-loss is permanently disabled system-wide (client decision
+                  stop-loss is permanently disabled system-wide (removed
                   2026-09-16), see _maybe_place_close_original's docstring for the
                   full rationale and data. Every entry (original and counter) now
                   runs independently to its own take-profit only.
@@ -249,17 +249,16 @@ class OrderTracker:
             logger.error("Failed to place TP for order_id=%s: %s", order_id, exc)
 
     def _maybe_place_close_original(self, order: Dict[str, Any]) -> None:
-        """PERMANENTLY DISABLED — client decision 2026-09-16: stop-loss is
-        removed from the system entirely, "not now and not later". A COUNTER
-        fill no longer attaches any stop to its original; the original runs
-        to its own take-profit only. This is unconditional and hardcoded —
-        it does NOT consult any dashboard setting (per-timeframe switch,
-        cutoff, or the master kill switch in db.py), specifically so a
-        setting can never be flipped, misconfigured, or defaulted back into
-        placing an SL again. Any close_original block on the alert is
-        ignored outright, including for counters that armed before this
-        change and are only filling now — same code path, same outcome
-        (client spec point 5).
+        """PERMANENTLY DISABLED — 2026-09-16: stop-loss is removed from the
+        system entirely, not just for now. A COUNTER fill no longer attaches
+        any stop to its original; the original runs to its own take-profit
+        only. This is unconditional and hardcoded — it does NOT consult any
+        dashboard setting (per-timeframe switch, cutoff, or the master kill
+        switch in db.py), specifically so a setting can never be flipped,
+        misconfigured, or defaulted back into placing an SL again. Any
+        close_original block on the alert is ignored outright, including for
+        counters that armed before this change and are only filling now —
+        same code path, same outcome.
 
         Data behind the decision (Bybit executions, both bots, 2026-09-06 to
         2026-09-13, each entry judged against its own price, never the
@@ -289,7 +288,7 @@ class OrderTracker:
 
         set_sl_placed_sync(counter["id"], placed=False)
         logger.info(
-            "close_original: SL permanently disabled (client decision 2026-09-16) — "
+            "close_original: SL permanently disabled (removed 2026-09-16) — "
             "of_id=%s counter_signal_id=%s runs independently from its original, "
             "take-profit only, no stop-loss.",
             counter.get("of_id"), counter["id"],

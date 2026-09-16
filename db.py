@@ -62,8 +62,8 @@ _INDEXES = [
 ]
 
 # Per-timeframe stop-loss on/off switch. One row per interval value (matches
-# the free-text `interval` string Pine sends, e.g. "1", "1S", "60" — not a
-# fixed enum, since the client wants to type in any timeframe himself).
+# the free-text `interval` string Pine sends, e.g. "1", "1S", "60" — kept as
+# free text rather than a fixed enum so any timeframe can be entered directly).
 # A timeframe with NO row here is treated as enabled — see
 # is_sl_enabled_for_interval_sync. Per-bot: each bot has its own signals.db,
 # so this table naturally lives per-account with zero shared-state risk.
@@ -75,8 +75,8 @@ CREATE TABLE IF NOT EXISTS sl_timeframe_settings (
 );
 """
 
-# "Margin" cutoff: instead of toggling every timeframe by hand, the client can
-# set one threshold ("2 hours and above -> no SL"). Single row (id=1); no row
+# "Margin" cutoff: instead of toggling every timeframe by hand, one threshold
+# can be set ("2 hours and above -> no SL"). Single row (id=1); no row
 # or interval=NULL means no cutoff configured. An exact match in
 # sl_timeframe_settings always wins over this — the cutoff only fills in
 # timeframes nobody has explicitly set.
@@ -88,11 +88,11 @@ CREATE TABLE IF NOT EXISTS sl_cutoff_setting (
 );
 """
 
-# Master kill switch: "remove every SL, keep TP/limits" (client-requested,
-# 2026-09-13). When off, NO stop-loss is ever placed for ANY timeframe —
-# takes precedence over both the per-timeframe switches and the cutoff, and
-# over the no-interval fail-safe, since the client's intent here is total and
-# unconditional. Single row (id=1); no row means enabled (normal behavior).
+# Master kill switch: "remove every SL, keep TP/limits" (added 2026-09-13).
+# When off, NO stop-loss is ever placed for ANY timeframe — takes precedence
+# over both the per-timeframe switches and the cutoff, and over the
+# no-interval fail-safe, since this is meant as a total, unconditional
+# override. Single row (id=1); no row means enabled (normal behavior).
 _CREATE_SL_MASTER_SWITCH_TABLE = """
 CREATE TABLE IF NOT EXISTS sl_master_switch (
     id          INTEGER PRIMARY KEY CHECK (id = 1),
@@ -103,7 +103,7 @@ CREATE TABLE IF NOT EXISTS sl_master_switch (
 
 # Minutes-per-unit for Pine's timeframe.period format ("60", "1D", "3D", "1W",
 # "1S"...). Bare digits (no suffix letter) are minutes. "H" isn't a real Pine
-# unit but accepted as a convenience since the client thinks/types in hours.
+# unit but accepted as a convenience for entering times in hours.
 _INTERVAL_UNIT_MINUTES = {
     "": 1,
     "S": 1 / 60,

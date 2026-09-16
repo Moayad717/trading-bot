@@ -1,16 +1,16 @@
 """
 Tests for the two routers/webhook.py changes made alongside the permanent
-SL removal (client decision, 2026-09-16):
+SL removal (2026-09-16):
 
   1. _handle_cancel_close_original_sync is now a real no-op — the
      "cancel_close_original" action used to cancel a resting conditional SL
-     order, but there's never an SL left to cancel anymore (spec point 2).
+     order, but there's never an SL left to cancel anymore.
   2. The market-order take-profit path in _place_order_sync now tags its TP
      order the same way the limit-entry path already does
      (order_tracker.py's _maybe_place_tp) — <of_id>_TP or <of_id>_CTP.
      Not currently reachable by real TradingView traffic (every recent
-     signal is order_type=limit), but the client was explicit: every order
-     the bot places must carry the current tag, defensively included.
+     signal is order_type=limit), but every order the bot places should
+     still carry the current tag, defensively included.
 """
 from unittest.mock import MagicMock
 

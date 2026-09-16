@@ -11,7 +11,7 @@ Background on why these specific scenarios exist:
     DB view and Bybit's view diverge permanently — DB sees each signal as
     uncovered while Bybit already has the full qty covered, so the old code
     hammered retries every 60s forever trying to "fix" a position that was
-    never broken. Confirmed with the client's own numbers: DB reported 6.6
+    never broken. Confirmed with the real production numbers: DB reported 6.6
     covered / 99.3 naked while Bybit showed 99.4 fully covered. Fixed by
     reading covered_qty directly from resting orders (symbol+side+positionIdx),
     independent of any DB linkage.

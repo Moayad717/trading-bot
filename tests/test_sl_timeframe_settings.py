@@ -1,12 +1,12 @@
 """
 Tests for stop-loss settings and behavior.
 
-History: 2026-09-13 added a per-timeframe SL on/off switch (client wanted
-some timeframes protected, others not) plus a cutoff and a master kill
-switch. On 2026-09-16 the client reversed this entirely: stop-loss is
-permanently removed from the system, "not now and not later" — see
-order_tracker.py's _maybe_place_close_original docstring for the full data
-behind that decision.
+History: 2026-09-13 added a per-timeframe SL on/off switch (some timeframes
+protected, others not) plus a cutoff and a master kill switch. On
+2026-09-16 this was reversed entirely: stop-loss is permanently removed
+from the system, not just for now — see order_tracker.py's
+_maybe_place_close_original docstring for the full data behind that
+decision.
 
 The settings CRUD (db.py) is still real, live code reachable via the
 dashboard API, so it's still tested here — but order_tracker.py's
@@ -79,7 +79,7 @@ def test_list_settings_returns_all_configured(tmp_db):
 
 
 # ── order_tracker.py: SL is permanently, unconditionally disabled ─────────
-# (client decision, 2026-09-16). The settings above are still real, live
+# (removed 2026-09-16). The settings above are still real, live
 # CRUD behind the dashboard, but _maybe_place_close_original no longer
 # consults any of them — these tests prove that directly, not just that the
 # lookup function itself returns the right answer in isolation.
@@ -175,7 +175,7 @@ def test_non_counter_entry_fill_is_a_no_op(tmp_db):
 
 
 def test_armed_counter_from_before_the_change_still_gets_no_sl(tmp_db):
-    """Client spec point 5: a counter that armed before 2026-09-16 (its
+    """A counter that armed before 2026-09-16 (its
     alert already carried close_original) but is only filling now must
     still get no SL — this is the exact same code path as a fresh signal,
     so 'already armed' isn't a special case that needs separate handling."""
@@ -209,7 +209,7 @@ def test_interval_to_minutes_days_weeks():
 
 
 def test_interval_to_minutes_hour_convenience_alias():
-    """Not a real Pine unit, but accepted since the client thinks in hours."""
+    """Not a real Pine unit, but accepted as a convenience for hours."""
     assert db.interval_to_minutes("2H") == 120
 
 
