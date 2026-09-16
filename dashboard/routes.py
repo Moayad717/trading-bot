@@ -76,6 +76,35 @@ async def api_key_info() -> Dict[str, Any]:
     }
 
 
+@router.get("/balance", summary="Account equity / balance")
+async def account_balance() -> Dict[str, Any]:
+    from exchanges.bybit import BybitExchange
+
+    def _fetch() -> Dict[str, Any]:
+        ex = BybitExchange()
+        return {"equity": ex.get_equity(), "balance": ex.get_balance()}
+
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(None, _fetch)
+    except Exception as exc:
+        return {"error": str(exc), "equity": None, "unrealised_pnl": None}
+
+    bal = result["balance"]
+
+    def _to_float(v: Any) -> Optional[float]:
+        try:
+            return float(v) if v not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        "equity":         result["equity"],
+        "wallet_balance": _to_float(bal.get("walletBalance")),
+        "unrealised_pnl": _to_float(bal.get("unrealisedPnl")),
+    }
+
+
 class SLTimeframeSettingIn(BaseModel):
     interval: str
     sl_enabled: bool

@@ -217,6 +217,7 @@
 <header>
     <div class="logo">Trading<span>Bot</span></div>
     <div class="header-meta">
+        <span id="balance-badge" style="display:none"></span>
         <span id="api-key-badge" style="display:none"></span>
         <span id="updated-at"><span class="status-dot loading" id="dot"></span>Loading…</span>
         <span id="next-refresh"></span>
@@ -667,6 +668,7 @@ async function refresh() {
 
     // Section 4 — refresh signals table (keep current page + filters)
     fetchSignals();
+    loadAccountBalance();
 }
 
 // ── Auto-refresh countdown ────────────────────────────────────────────────────
@@ -683,6 +685,24 @@ function startCountdown() {
             refresh().then(startCountdown);
         }
     }, 1000);
+}
+
+// ── Account balance badge ───────────────────────────────────────────────────────
+async function loadAccountBalance() {
+    try {
+        const d = await fetch('/dashboard/balance').then(r => r.json());
+        const badge = document.getElementById('balance-badge');
+        if (d.error || d.equity === null) { badge.style.display = 'none'; return; }
+        const pnl = d.unrealised_pnl;
+        let pnlHtml = '';
+        if (pnl !== null && pnl !== undefined) {
+            const color = pnl > 0 ? 'var(--green)' : pnl < 0 ? 'var(--red)' : 'var(--muted)';
+            const sign = pnl > 0 ? '+' : '';
+            pnlHtml = ` <span style="color:${color}">(${sign}${pnl.toFixed(2)})</span>`;
+        }
+        badge.innerHTML = `💰 ${d.equity.toFixed(2)} USDT${pnlHtml}`;
+        badge.style.display = 'inline';
+    } catch(e) { /* silently ignore */ }
 }
 
 // ── API key expiry badge ──────────────────────────────────────────────────────
@@ -708,6 +728,7 @@ document.querySelector('th[data-col="timestamp"]').classList.add('sort-desc');
 refresh().then(startCountdown);
 loadSummary();
 loadApiKeyBadge();
+loadAccountBalance();
 
 if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/dashboard/sw.js', {scope:'/dashboard/'});
