@@ -426,68 +426,17 @@ def _handle_exit_position_sync(payload: dict, exchange: Any) -> None:
 
 
 def _handle_cancel_close_original_sync(payload: dict, exchange: Any) -> None:
-    """Handle cancel_close_original alerts from Pine.
-
-    Fired when the ORIGINAL reaches its own TP while a stop-loss is still
-    attached to that position.  The original's position is now closing on its
-    TP, so the orphaned SL must be removed to avoid a spurious partial-close
-    later.
-
-    New rows: the SL is a real conditional order with its own order_id
-    (sl_order_id) — cancel_order removes exactly that one order and nothing
-    else on the position. Legacy rows (SL placed before this mechanism
-    existed, sl_order_id NULL) still use the old position-level
-    set_trading_stop field, cancelled via cancel_partial_sl — that call wipes
-    every stop on the side, which was always the risk with the old design and
-    is exactly why new rows don't use it. Bybit may have already removed the
-    SL when the position closed either way — that's fine, both cancel paths
-    are idempotent and any error is logged without raising.
-    """
-    try:
-        of_id = payload.get("id", "")
-        if not of_id:
-            logger.warning("cancel_close_original alert missing 'id' field — ignoring")
-            return
-
-        original = get_original_signal_by_of_id_sync(of_id)
-        if not original:
-            logger.warning(
-                "cancel_close_original: no active original signal for of_id=%s", of_id
-            )
-            return
-
-        orig_action  = original["action"]
-        position_idx = 1 if orig_action == "buy" else 2
-        sl_order_id  = original.get("sl_order_id")
-
-        try:
-            if sl_order_id:
-                exchange.cancel_order(sl_order_id, original["symbol"])
-                logger.info(
-                    "cancel_close_original: cancelled conditional SL order_id=%s "
-                    "from original signal_id=%s symbol=%s",
-                    sl_order_id, original["id"], original["symbol"],
-                )
-            else:
-                exchange.cancel_partial_sl(
-                    symbol=original["symbol"],
-                    position_idx=position_idx,
-                    category=original.get("category", "linear"),
-                )
-                logger.info(
-                    "cancel_close_original: legacy Partial SL removed from original "
-                    "signal_id=%s symbol=%s position_idx=%s",
-                    original["id"], original["symbol"], position_idx,
-                )
-        except Exception as exc:
-            # Position may already be flat — SL auto-removed, no action needed.
-            logger.warning(
-                "cancel_close_original: cancel_partial_sl failed "
-                "(position may already be closed, SL auto-removed): %s", exc,
-            )
-
-    except Exception as exc:
-        logger.error("Unexpected error in _handle_cancel_close_original_sync: %s", exc)
+    """PERMANENTLY IGNORED — client decision 2026-09-16 (spec point 2): stop-loss
+    is removed from the system, so there is never an SL left to cancel. This
+    used to cancel the original's conditional SL when the original reached its
+    own TP first. Kept as a named no-op (rather than removed) so the action
+    dispatch in tradingview_webhook stays self-documenting about every action
+    type Pine can send, current Pine behavior included."""
+    of_id = payload.get("id", "")
+    logger.info(
+        "cancel_close_original: ignored (SL permanently disabled, client "
+        "decision 2026-09-16) — of_id=%s", of_id,
+    )
 
 
 def _place_order_sync(signal_create: Any, exchange: Any) -> None:
@@ -593,6 +542,15 @@ def _place_order_sync(signal_create: Any, exchange: Any) -> None:
             if signal_create.take_profit and order_id:
                 tp_side      = "Sell" if signal_create.action == Action.BUY else "Buy"
                 position_idx = 1 if signal_create.action == Action.BUY else 2
+                # Tag exactly like the limit-entry path (_maybe_place_tp in
+                # order_tracker.py) — <of_id>_TP or <of_id>_CTP for a counter.
+                # Market orders currently never fire from real TradingView
+                # traffic, but every order the bot places must still carry
+                # the current tag if this path ever does trigger.
+                link_id_base = None
+                if signal_create.of_id:
+                    role = "CTP" if (signal_create.pattern_type or "").upper() == "COUNTER" else "TP"
+                    link_id_base = build_order_link_id(signal_create.of_id, role)
                 try:
                     tp_result = exchange.place_tp_order(
                         symbol=signal_create.symbol,
@@ -601,6 +559,7 @@ def _place_order_sync(signal_create: Any, exchange: Any) -> None:
                         price=signal_create.take_profit,
                         position_idx=position_idx,
                         category=signal_create.category,
+                        order_link_id_base=link_id_base,
                     )
                     tp_oid = tp_result.get("order_id", "")
                     if tp_oid:

@@ -1,16 +1,22 @@
 """
-Tests for the per-timeframe stop-loss on/off switch (client-requested,
-2026-09-13): some timeframes perform better with a stop-loss, others
-without, so it needs to be a per-timeframe setting rather than all-or-
-nothing.
+Tests for stop-loss settings and behavior.
 
-Two layers tested here:
-  1. db.py's settings CRUD + the default-on lookup rule.
-  2. order_tracker.py's _maybe_place_close_original actually consulting
-     that setting before placing a conditional SL, and correctly falling
-     through the existing sl_placed=0 "no SL for this pairing" path when
-     disabled — deliberately reusing Case A's semantics rather than
-     inventing a new state, so nothing downstream needs to change.
+History: 2026-09-13 added a per-timeframe SL on/off switch (client wanted
+some timeframes protected, others not) plus a cutoff and a master kill
+switch. On 2026-09-16 the client reversed this entirely: stop-loss is
+permanently removed from the system, "not now and not later" — see
+order_tracker.py's _maybe_place_close_original docstring for the full data
+behind that decision.
+
+The settings CRUD (db.py) is still real, live code reachable via the
+dashboard API, so it's still tested here — but order_tracker.py's
+_maybe_place_close_original no longer consults ANY of it. The tests below
+are split accordingly:
+  1. db.py's settings CRUD + the default-on lookup rule (still-live,
+     dashboard-facing infrastructure, disconnected from order placement).
+  2. order_tracker.py's _maybe_place_close_original never placing an SL,
+     under every combination of settings — proving the removal is
+     unconditional, not merely "off by default".
 """
 from unittest.mock import MagicMock
 
@@ -72,11 +78,16 @@ def test_list_settings_returns_all_configured(tmp_db):
     assert by_interval == {"1": 0, "240": 1}
 
 
-# ── order_tracker.py integration ────────────────────────────────────────
+# ── order_tracker.py: SL is permanently, unconditionally disabled ─────────
+# (client decision, 2026-09-16). The settings above are still real, live
+# CRUD behind the dashboard, but _maybe_place_close_original no longer
+# consults any of them — these tests prove that directly, not just that the
+# lookup function itself returns the right answer in isolation.
 
 def _set_columns(db_path: str, signal_id: int, **cols) -> None:
     """conftest's insert_signal helper doesn't cover every column (order_id,
-    interval) — set them directly for tests that need them."""
+    interval, close_original_json, take_profit) — set them directly for
+    tests that need them."""
     import sqlite3
     conn = sqlite3.connect(db_path)
     for col, val in cols.items():
@@ -85,26 +96,101 @@ def _set_columns(db_path: str, signal_id: int, **cols) -> None:
     conn.close()
 
 
-def test_sl_skipped_for_disabled_timeframe(tmp_db):
-    """End-to-end through the real WS fill-handling entry point
-    (_maybe_place_close_original), not just the lookup function in
-    isolation — proves the wiring, not just the logic."""
-    db.set_sl_timeframe_setting_sync("5", False)
+def test_sl_never_placed_even_with_most_permissive_settings(tmp_db):
+    """Explicit per-timeframe 'enabled' + master switch ON — the most
+    SL-permissive configuration possible — must still never place an SL.
+    The removal is hardcoded, not gated by these settings."""
+    db.set_sl_timeframe_setting_sync("60", True)
+    db.set_sl_master_switch_sync(True)
+
     orig_id = insert_signal(tmp_db, action="buy", of_id="flowA", quantity=2.0,
                              symbol="LINKUSDT", category="linear")
-    _set_columns(tmp_db, orig_id, interval="5")
+    _set_columns(tmp_db, orig_id, interval="60")
 
     ctr_id = insert_signal(tmp_db, action="sell", of_id="flowA", pattern_type="COUNTER",
                             quantity=2.0, symbol="LINKUSDT")
-    # take_profit isn't in insert_signal's fixed column list — set directly,
-    # or the function would return early for an unrelated reason (no trigger
-    # price resolvable at all) and this test would pass without actually
-    # exercising the interval check it's meant to verify.
     _set_columns(tmp_db, ctr_id, order_id="ctr-entry-order", take_profit=12.0)
 
     exchange = MagicMock()
     tracker = OrderTracker(exchange=exchange)
     tracker._maybe_place_close_original({"orderId": "ctr-entry-order", "symbol": "LINKUSDT"})
+
+    exchange.place_conditional_sl.assert_not_called()
+
+
+def test_sl_placed_marked_false_for_every_counter_fill(tmp_db):
+    """sl_placed must still be recorded False (never left NULL) so the
+    legacy completion-inference path never wrongly links an original's
+    completion to its counter's TP fill — see
+    _maybe_complete_original_after_counter_tp's Case A semantics."""
+    insert_signal(tmp_db, action="buy", of_id="flowB", quantity=2.0, symbol="LINKUSDT")
+    ctr_id = insert_signal(tmp_db, action="sell", of_id="flowB", pattern_type="COUNTER",
+                            quantity=2.0, symbol="LINKUSDT")
+    _set_columns(tmp_db, ctr_id, order_id="ctr-entry-order-flag", take_profit=12.0)
+
+    exchange = MagicMock()
+    tracker = OrderTracker(exchange=exchange)
+    tracker._maybe_place_close_original({"orderId": "ctr-entry-order-flag", "symbol": "LINKUSDT"})
+
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    row = conn.execute("SELECT sl_placed FROM signals WHERE id=?", (ctr_id,)).fetchone()
+    conn.close()
+    assert row[0] == 0
+
+
+def test_close_original_block_ignored_even_when_present(tmp_db):
+    """A counter carrying a real close_original_json block (as Pine still
+    sends whenever its 'Counter also stops the original' input is left on)
+    must be fully ignored — never parsed for a trigger price, never used to
+    query the original's live position size."""
+    insert_signal(tmp_db, action="buy", of_id="flowC", quantity=2.0, symbol="LINKUSDT")
+    ctr_id = insert_signal(tmp_db, action="sell", of_id="flowC", pattern_type="COUNTER",
+                            quantity=2.0, symbol="LINKUSDT")
+    _set_columns(
+        tmp_db, ctr_id, order_id="ctr-entry-order-block", take_profit=12.0,
+        close_original_json='{"mode":"partial_position_sl","trigger_price":"11.9",'
+                             '"order_type":"market","place_on":"entry_fill"}',
+    )
+
+    exchange = MagicMock()
+    tracker = OrderTracker(exchange=exchange)
+    tracker._maybe_place_close_original({"orderId": "ctr-entry-order-block", "symbol": "LINKUSDT"})
+
+    exchange.place_conditional_sl.assert_not_called()
+    exchange.get_position_size.assert_not_called()
+
+
+def test_non_counter_entry_fill_is_a_no_op(tmp_db):
+    """A plain (non-COUNTER) entry fill must not touch anything — this
+    function only ever concerned itself with counters."""
+    orig_id = insert_signal(tmp_db, action="buy", of_id="flowD", quantity=2.0, symbol="LINKUSDT")
+    _set_columns(tmp_db, orig_id, order_id="entry-order-std")
+
+    exchange = MagicMock()
+    tracker = OrderTracker(exchange=exchange)
+    tracker._maybe_place_close_original({"orderId": "entry-order-std", "symbol": "LINKUSDT"})
+
+    exchange.place_conditional_sl.assert_not_called()
+
+
+def test_armed_counter_from_before_the_change_still_gets_no_sl(tmp_db):
+    """Client spec point 5: a counter that armed before 2026-09-16 (its
+    alert already carried close_original) but is only filling now must
+    still get no SL — this is the exact same code path as a fresh signal,
+    so 'already armed' isn't a special case that needs separate handling."""
+    db.set_sl_timeframe_setting_sync("15", True)  # simulates an old, still-enabled config
+    insert_signal(tmp_db, action="buy", of_id="flowE", quantity=2.0, symbol="LINKUSDT")
+    ctr_id = insert_signal(tmp_db, action="sell", of_id="flowE", pattern_type="COUNTER",
+                            quantity=2.0, symbol="LINKUSDT")
+    _set_columns(
+        tmp_db, ctr_id, order_id="ctr-entry-order-armed", take_profit=12.0,
+        close_original_json='{"trigger_price":"11.9"}',
+    )
+
+    exchange = MagicMock()
+    tracker = OrderTracker(exchange=exchange)
+    tracker._maybe_place_close_original({"orderId": "ctr-entry-order-armed", "symbol": "LINKUSDT"})
 
     exchange.place_conditional_sl.assert_not_called()
 
@@ -178,27 +264,6 @@ def test_no_cutoff_means_only_explicit_switches_apply(tmp_db):
     assert db.is_sl_enabled_for_interval_sync("1D") is True
 
 
-def test_sl_placed_for_enabled_timeframe(tmp_db):
-    """Control case, same end-to-end path: an enabled (default) timeframe
-    must still get its SL — confirms the new check doesn't accidentally
-    block the normal path for everything else."""
-    orig_id = insert_signal(tmp_db, action="buy", of_id="flowB", quantity=2.0,
-                             symbol="LINKUSDT", category="linear")
-    _set_columns(tmp_db, orig_id, interval="60")  # never configured -> default enabled
-
-    ctr_id = insert_signal(tmp_db, action="sell", of_id="flowB", pattern_type="COUNTER",
-                            quantity=2.0, symbol="LINKUSDT")
-    _set_columns(tmp_db, ctr_id, order_id="ctr-entry-order-2", take_profit=12.0)
-
-    exchange = MagicMock()
-    exchange.round_qty.side_effect = lambda qty, symbol, category="linear": qty
-    exchange.place_conditional_sl.return_value = {"order_id": "new-sl-order"}
-    tracker = OrderTracker(exchange=exchange)
-    tracker._maybe_place_close_original({"orderId": "ctr-entry-order-2", "symbol": "LINKUSDT"})
-
-    exchange.place_conditional_sl.assert_called_once()
-
-
 # ── db.py layer: master kill switch ─────────────────────────────────────────
 
 def test_master_switch_enabled_by_default(tmp_db):
@@ -235,42 +300,9 @@ def test_master_switch_on_restores_normal_rules(tmp_db):
     assert db.is_sl_enabled_for_interval_sync(None) is True
 
 
-def test_master_switch_off_end_to_end(tmp_db):
-    """Same real entry point as the other end-to-end tests — proves the kill
-    switch is actually wired into order placement."""
-    db.set_sl_master_switch_sync(False)
 
-    orig_id = insert_signal(tmp_db, action="buy", of_id="flowD", quantity=2.0,
-                             symbol="LINKUSDT", category="linear")
-    _set_columns(tmp_db, orig_id, interval="5")
-
-    ctr_id = insert_signal(tmp_db, action="sell", of_id="flowD", pattern_type="COUNTER",
-                            quantity=2.0, symbol="LINKUSDT")
-    _set_columns(tmp_db, ctr_id, order_id="ctr-entry-order-4", take_profit=12.0)
-
-    exchange = MagicMock()
-    tracker = OrderTracker(exchange=exchange)
-    tracker._maybe_place_close_original({"orderId": "ctr-entry-order-4", "symbol": "LINKUSDT"})
-
-    exchange.place_conditional_sl.assert_not_called()
-
-
-def test_cutoff_skips_sl_end_to_end(tmp_db):
-    """Same real entry point as the per-timeframe tests above, but driven by
-    the cutoff instead of an exact-match row — proves the cutoff is actually
-    wired into order placement, not just the lookup function."""
-    db.set_sl_cutoff_sync("120")  # 2 hours and above -> no SL
-
-    orig_id = insert_signal(tmp_db, action="buy", of_id="flowC", quantity=2.0,
-                             symbol="LINKUSDT", category="linear")
-    _set_columns(tmp_db, orig_id, interval="240")  # 4h, at/above the 2h cutoff
-
-    ctr_id = insert_signal(tmp_db, action="sell", of_id="flowC", pattern_type="COUNTER",
-                            quantity=2.0, symbol="LINKUSDT")
-    _set_columns(tmp_db, ctr_id, order_id="ctr-entry-order-3", take_profit=12.0)
-
-    exchange = MagicMock()
-    tracker = OrderTracker(exchange=exchange)
-    tracker._maybe_place_close_original({"orderId": "ctr-entry-order-3", "symbol": "LINKUSDT"})
-
-    exchange.place_conditional_sl.assert_not_called()
+# Note: no end-to-end test exercises these settings actually blocking SL via
+# _maybe_place_close_original anymore — that function no longer consults them
+# at all (see the "order_tracker.py" section above, which proves the removal
+# is unconditional). These settings remain real, tested CRUD behind the
+# dashboard, but are disconnected from order placement by design.

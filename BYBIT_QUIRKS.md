@@ -100,3 +100,78 @@ actual damage, but it's an easy way to crash something unexpectedly.
 `InvalidRequestError` carries the real code as `exc.status_code` (an int)
 — match on that, not on string content in the message, which can change
 wording between Bybit API versions.
+
+## 6. Conditional orders are capped at 10 per symbol — a hard, fixed limit
+
+Confirmed live 2026-09-12 (rejection: "already had 10 working normal stop
+orders") and in Bybit's own official docs: Perps & Futures accounts can hold
+at most **10 active conditional orders per symbol**, full stop. Not tied to
+VIP tier, margin mode, or any account setting — there is no way to raise it.
+
+This bit hard because of a separate bug (now fixed, see git history
+2026-09-12): an original's conditional SL wasn't cancelled when it closed
+via its own ordinary take-profit fill — only two narrow Pine-alert-driven
+paths cancelled it, and neither covers that (the most common) case. Every
+original completing that way leaked one of the 10 slots permanently until
+all 10 were exhausted and brand-new originals could get no SL placed at
+all — 5 real positions sat unprotected before this was caught.
+
+**Practical consequence:** any strategy that can have more than 10
+simultaneous same-symbol flows each needing their own individual
+conditional order (stop-loss or otherwise) WILL hit this ceiling —
+regardless of how clean the cleanup logic is, since the ceiling reflects
+genuine concurrent need, not leakage. If a client's strategy on one symbol
+regularly runs close to or above this, that's a real capacity conversation,
+not a bug to chase — the fix would need to be architectural (fewer,
+larger conditional orders covering several flows at once — which
+reintroduces the exact "individual TP/SL tracking" problem items 1 and 5
+elsewhere in this project exist specifically to avoid), not a config change.
+
+## 7. Stop-loss permanently removed from the system (client decision, 2026-09-16)
+
+Client analysed Bybit executions on both bots (8003, 8005), 2026-09-06 to
+2026-09-13, every entry judged against its own price, never the position
+average:
+
+- **TP/CTP closes**: 48 on 8003, 171 on 8005. Every single one closed
+  between +0.500% and +0.508% of its own entry — median +0.504%/+0.505%,
+  25.2% ROE at 50x. Zero exceptions.
+- **SL closes**: 6 on 8003, 11 on 8005. Every single one closed at a loss,
+  -0.99% to -1.90% (-49.7% to -94.9% ROE). The SL was the *only* source of
+  losing closes in either bot.
+- **Double-close bug caused by the SL**: when an SL fired, the original's
+  TP sometimes stayed resting and filled later too — closing the same
+  entry twice, with the second fill actually taking position size from a
+  different, unrelated flow. Found on 3 flows on 8003, 11 on 8005.
+
+Decision: stop-loss (`_SL` conditional orders, the `close_original` alert
+block, and the `cancel_close_original` action) is removed from the system
+entirely, unconditionally, permanently — "not now and not later". Every
+entry (order flow and counter alike) now runs independently to its own
+take-profit only; the double-close bug disappears by construction, since
+every entry then has exactly one possible exit.
+
+Implementation is hardcoded in `order_tracker.py`'s
+`_maybe_place_close_original` (an unconditional no-op that never calls
+`place_conditional_sl`) and `webhook.py`'s `_handle_cancel_close_original_sync`
+(a no-op) — deliberately NOT gated by a dashboard toggle, so it can't be
+flipped back on by a misconfiguration or a future default change. Covers
+counters that had already armed (with a `close_original` block already
+attached) before this change and are only filling later — same code path,
+same outcome.
+
+**Separate, unrelated finding from the same investigation** — some TP/CTP
+orders were placed with an empty `orderLinkId` or an old (pre-`LINK-`
+prefix) tag format. Traced to two historical sources, neither an ongoing
+bug: (a) Bybit's own auto-generated `PartialTakeProfit` orders from a
+now-cleared, stale position-level `tpslMode=Partial` setting (confirmed all
+live positions are back to `tpslMode=Full`), and (b) TP orders placed
+months earlier — before tagging existed in the code, or while Pine still
+used its old ID scheme — that simply hadn't filled yet. Verified every
+signal since 2026-09-06 on both bots has `order_type=limit` and a
+non-empty `of_id`, so current traffic is tagged correctly. One latent gap
+was still fixed defensively: the market-order TP path in `_place_order_sync`
+never tagged its TP order at all (unconditionally, by omission) — not
+reachable by real traffic today, but fixed to tag exactly like the
+limit-entry path, since every order the bot places should carry the
+current `<of_id>_E/_TP/_CE/_CTP` tag.

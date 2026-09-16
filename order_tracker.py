@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import json
 import logging
-import time
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from pybit.unified_trading import WebSocket
@@ -15,11 +13,9 @@ from db import (
     get_signal_by_order_id_sync,
     get_signal_by_sl_order_id_sync,
     get_signal_by_tp_order_id_sync,
-    is_sl_enabled_for_interval_sync,
     link_auto_tp_sync,
     mark_entry_filled_sync,
     mark_tp_completed_sync,
-    set_sl_order_id_sync,
     set_sl_placed_sync,
     set_tp_order_id_sync,
     update_order_status_sync,
@@ -42,24 +38,24 @@ class OrderTracker:
     Subscribes to Bybit's private order stream via WebSocket.
 
     Entry fill  → status ACTIVE, entry_fill_time set, TP placed, tp_order_id stored.
-                  For COUNTER entries: also places a real conditional-Limit SL order
-                  on the original (place_conditional_sl), tagged <of_id>_SL, and
-                  stores its order_id on the original's own row (sl_order_id).
+                  For COUNTER entries: no stop-loss is placed on the original —
+                  stop-loss is permanently disabled system-wide (client decision
+                  2026-09-16), see _maybe_place_close_original's docstring for the
+                  full rationale and data. Every entry (original and counter) now
+                  runs independently to its own take-profit only.
 
-    SL fill (real order) → original COMPLETED directly from its own fill event.
-                  Legacy rows placed before this change (sl_placed=1, sl_order_id
-                  NULL) still used the old position-level set_trading_stop, which
-                  has no order_id — those fall back to the old inference (original
-                  assumed completed when its counter's TP fills). New rows never
-                  use that inference; it produced silently-wrong completions when
-                  two counters on the same side filled close together and the
-                  second set_trading_stop call overwrote the first's stop.
+    SL fill (real order) → LEGACY ONLY. Rows with a real sl_order_id predate the
+                  2026-09-16 removal; if one of those pre-existing conditional
+                  orders still fills, the original completes directly from its
+                  own fill event, same as before. No new rows ever get an
+                  sl_order_id, so this branch naturally goes quiet over time.
     Regular TP fill → signal COMPLETED.
 
     New reduce-only order → backup tp_order_id link via link_auto_tp_sync.
     Cancelled / Rejected / Expired → status FAILED.
 
-    Pine never fires exit_position; cancel_close_original is handled in webhook.py.
+    Pine never fires exit_position; cancel_close_original is a no-op — see
+    _handle_cancel_close_original_sync in webhook.py.
 
     Runs in its own thread managed by pybit — safe to start/stop from asyncio lifespan.
     """
@@ -253,277 +249,51 @@ class OrderTracker:
             logger.error("Failed to place TP for order_id=%s: %s", order_id, exc)
 
     def _maybe_place_close_original(self, order: Dict[str, Any]) -> None:
-        """When a COUNTER entry fills, attach a stop-loss to the original position.
+        """PERMANENTLY DISABLED — client decision 2026-09-16: stop-loss is
+        removed from the system entirely, "not now and not later". A COUNTER
+        fill no longer attaches any stop to its original; the original runs
+        to its own take-profit only. This is unconditional and hardcoded —
+        it does NOT consult any dashboard setting (per-timeframe switch,
+        cutoff, or the master kill switch in db.py), specifically so a
+        setting can never be flipped, misconfigured, or defaulted back into
+        placing an SL again. Any close_original block on the alert is
+        ignored outright, including for counters that armed before this
+        change and are only filling now — same code path, same outcome
+        (client spec point 5).
 
-        Pine's close_original block:
-          "mode":          "partial_position_sl"
-          "trigger_price": "<counter's TP price>"  ← the dynamic SL trigger
-          "order_type":    "market"
-          "place_on":      "entry_fill"
+        Data behind the decision (Bybit executions, both bots, 2026-09-06 to
+        2026-09-13, each entry judged against its own price, never the
+        position average): every TP/CTP closed within +0.500%-+0.508% of its
+        own entry, zero exceptions (48 closes on 8003, 171 on 8005). Every
+        SL closed at a loss, -0.99% to -1.90% against its own entry, and was
+        the only source of losing closes in either bot (6 on 8003, 11 on
+        8005). SL fills also sometimes left the original's TP resting,
+        double-closing the same entry (3 flows on 8003, 11 on 8005) — that
+        class of bug disappears entirely once SL is gone, since every entry
+        then has exactly one exit. See BYBIT_QUIRKS.md.
 
-        Placed as a real CONDITIONAL Limit order (place_conditional_sl), not
-        set_trading_stop — see that method's docstring for why: the old
-        position-level field has exactly one stop slot per side and silently
-        loses the earlier original's protection when two counters fill close
-        together. A conditional order only becomes live once triggerPrice is
-        reached, so — unlike a plain resting reduce-side limit — it does not
-        sit on the active side of the book and fill immediately at counter
-        entry; it behaves the same way Pine's forbidden-market-fill concern
-        was originally guarding against, just as a real, individually
-        cancellable order instead of an overwritable position field.
-
-        Falls back to counter's take_profit as the trigger when the block is absent.
+        sl_placed is still recorded as False for every counter fill (not
+        left NULL) — this preserves the existing, already-correct Case A
+        semantics in _maybe_complete_original_after_counter_tp: "no SL
+        exists for this pairing, the original and its counter are two
+        independent trades, never infer one's completion from the other's
+        fill." Removing this call would silently resurrect the legacy
+        completion-inference bug for every new signal.
         """
-        if self._exchange is None:
-            return
-
         order_id = order.get("orderId", "")
         counter  = get_signal_by_order_id_sync(order_id)
         if counter is None:
             return
-
         if (counter.get("pattern_type") or "").upper() != "COUNTER":
             return
 
-        of_id = counter.get("of_id")
-        if not of_id:
-            logger.warning(
-                "COUNTER fill has no of_id: order_id=%s — cannot place close_original",
-                order_id,
-            )
-            return
-
-        # Resolve the SL trigger price from close_original block or fall back to take_profit
-        sl_trigger: Optional[float] = None
-
-        co_json = counter.get("close_original_json")
-        if co_json:
-            try:
-                co = json.loads(co_json)
-                raw = co.get("trigger_price")    # Pine sends "trigger_price" for set_trading_stop
-                if raw is not None:
-                    sl_trigger = float(raw)
-            except (json.JSONDecodeError, ValueError, TypeError) as exc:
-                logger.warning(
-                    "close_original_json parse failed for order_id=%s: %s "
-                    "— falling back to take_profit",
-                    order_id, exc,
-                )
-
-        if sl_trigger is None:
-            counter_tp = counter.get("take_profit")
-            if counter_tp is None:
-                logger.error(
-                    "COUNTER fill has no close_original_json.trigger_price and no take_profit: "
-                    "order_id=%s — cannot place close_original",
-                    order_id,
-                )
-                return
-            sl_trigger = float(counter_tp)
-            logger.warning(
-                "COUNTER fill: no close_original_json, falling back to take_profit=%.5f "
-                "as SL trigger: order_id=%s",
-                sl_trigger, order_id,
-            )
-
-        original = get_original_signal_by_of_id_sync(of_id)
-        if not original:
-            logger.warning(
-                "COUNTER fill: no active original signal for of_id=%s order_id=%s",
-                of_id, order_id,
-            )
-            return
-
-        # Per-timeframe SL on/off switch (client-requested — some timeframes
-        # perform better without a stop-loss). Checked against the ORIGINAL's
-        # own interval, since that's the trade whose risk profile is being
-        # decided, not the counter's. Default is enabled — see
-        # is_sl_enabled_for_interval_sync's docstring for why unconfigured
-        # timeframes fail toward protection.
-        #
-        # Reuses the exact sl_placed=0 semantics Case A already established
-        # below ("original already closed -> counter runs unpaired, no
-        # completion inferred from it") — this is genuinely the same
-        # downstream state ("no SL exists for this pairing"), just reached
-        # for a different reason (a deliberate setting, not the original
-        # already being closed), so no new handling is needed anywhere else.
-        if not is_sl_enabled_for_interval_sync(original.get("interval")):
-            set_sl_placed_sync(counter["id"], placed=False)
-            logger.info(
-                "close_original: SL disabled for interval=%s (per-timeframe setting) — "
-                "original_signal_id=%s of_id=%s runs with take-profit only, no stop-loss.",
-                original.get("interval"), original["id"], of_id,
-            )
-            return
-
-        # Derive hedge-mode positionIdx from the original's action.
-        orig_action  = original["action"]      # "buy" (long) or "sell" (short)
-        position_idx = 1 if orig_action == "buy" else 2
-
-        try:
-            # Use the original's quantity rounded to its symbol's qtyStep.
-            # The SL covers the original position's size, not the counter's fill qty.
-            raw_sl_size = float(original["quantity"])
-            sl_size = self._exchange.round_qty(
-                raw_sl_size, original["symbol"], original.get("category", "linear")
-            )
-        except (TypeError, ValueError):
-            logger.error(
-                "COUNTER fill: invalid original quantity for of_id=%s — cannot size SL",
-                of_id,
-            )
-            return
-        if sl_size <= 0:
-            return
-
-        self._place_conditional_sl_with_retry(
-            counter=counter,
-            original=original,
-            position_idx=position_idx,
-            sl_trigger=sl_trigger,
-            sl_size=sl_size,
-            of_id=of_id,
+        set_sl_placed_sync(counter["id"], placed=False)
+        logger.info(
+            "close_original: SL permanently disabled (client decision 2026-09-16) — "
+            "of_id=%s counter_signal_id=%s runs independently from its original, "
+            "take-profit only, no stop-loss.",
+            counter.get("of_id"), counter["id"],
         )
-
-    def _place_conditional_sl_with_retry(
-        self,
-        counter: dict,
-        original: dict,
-        position_idx: int,
-        sl_trigger: float,
-        sl_size: float,
-        of_id: str,
-    ) -> None:
-        """Place a real conditional-Limit SL order for the original, retrying once
-        on transient errors.
-
-        Case A — the original's position is already zero: it closed before the
-        counter filled. Per spec 6.5 this is legitimate. Log INFO and mark
-        sl_placed=0 so the original is NOT marked COMPLETED via the legacy
-        counter-TP-fill inference path.
-
-        Case A must be checked BEFORE placing, not detected from a rejection —
-        confirmed live (2026-08-31) that unlike the old set_trading_stop (which
-        Bybit rejects outright against a zero position), a conditional order is
-        happily ACCEPTED even with no underlying position at all: it just sits
-        "Untriggered" forever, silently providing zero real protection while
-        looking exactly like a normal, successfully-placed SL in the DB
-        (sl_placed=1, sl_order_id set). That would recreate the same class of
-        bug this whole mechanism exists to fix, just via a new path. So the
-        position size is checked directly first; only Case B (a genuine error
-        on an original that does have a live position) still uses the retry.
-
-        Case B — any other error: retry once after 2 s. If the retry also fails, log
-        CRITICAL so the operator knows a counter is live with no stop on its original.
-        Mark sl_placed=0 in both failure outcomes.
-
-        On success, sl_order_id is stored on the ORIGINAL's own row — a WS Filled
-        event for that order_id then completes it directly (see _handle_fill).
-        """
-        orig_action = original["action"]  # "buy" (long) or "sell" (short)
-        sl_side            = "Sell" if orig_action == "buy" else "Buy"
-        # 2=Fall (long original, stop below current price) / 1=Rise (short original,
-        # stop above current price) — matches sl_trigger being set below market for
-        # a long's stop and above market for a short's stop.
-        trigger_direction  = 2 if orig_action == "buy" else 1
-        link_id_base       = build_order_link_id(of_id, "SL")
-
-        try:
-            position_side = "Buy" if orig_action == "buy" else "Sell"
-            live_size = self._exchange.get_position_size(
-                original["symbol"], position_side, original.get("category", "linear")
-            )
-            if live_size <= 0:
-                # ── Case A ───────────────────────────────────────────────────
-                set_sl_placed_sync(counter["id"], placed=False)
-                logger.info(
-                    "close_original: original position already closed before counter "
-                    "entry filled (original_signal_id=%s of_id=%s, live position size=%s) — "
-                    "counter runs unpaired, no SL needed (spec 6.5)",
-                    original["id"], of_id, live_size,
-                )
-                return
-        except Exception as exc:
-            # Can't confirm position state — fall through to the normal placement
-            # attempt below rather than silently skipping the SL on an API hiccup.
-            logger.warning(
-                "close_original: position-size check failed for original_signal_id=%s "
-                "of_id=%s — proceeding to placement attempt anyway: %s",
-                original["id"], of_id, exc,
-            )
-
-        for attempt in range(1, 3):
-            try:
-                result = self._exchange.place_conditional_sl(
-                    symbol=original["symbol"],
-                    position_idx=position_idx,
-                    side=sl_side,
-                    qty=sl_size,
-                    trigger_price=sl_trigger,
-                    trigger_direction=trigger_direction,
-                    order_link_id_base=link_id_base,
-                    category=original.get("category", "linear"),
-                )
-                # ── Success ──────────────────────────────────────────────────
-                sl_order_id = result.get("order_id", "")
-                set_sl_placed_sync(counter["id"], placed=True)
-                if sl_order_id:
-                    set_sl_order_id_sync(original["id"], sl_order_id)
-                logger.info(
-                    "close_original conditional SL placed: original_signal_id=%s "
-                    "sl_order_id=%s symbol=%s side=%s position_idx=%s sl_trigger=%.5f sl_size=%s",
-                    original["id"], sl_order_id, original["symbol"], sl_side,
-                    position_idx, sl_trigger, sl_size,
-                )
-                return
-            except RuntimeError as exc:
-                if "zero position" in str(exc).lower():
-                    # ── Case A ───────────────────────────────────────────────
-                    # Original is already flat. Counter runs alone to its TP.
-                    set_sl_placed_sync(counter["id"], placed=False)
-                    logger.info(
-                        "close_original: original position already closed before counter "
-                        "entry filled (original_signal_id=%s of_id=%s) — "
-                        "counter runs unpaired, no SL needed (spec 6.5)",
-                        original["id"], of_id,
-                    )
-                    return
-                # ── Case B, attempt 1 ────────────────────────────────────────
-                if attempt == 1:
-                    logger.warning(
-                        "close_original conditional SL failed (attempt 1/2): "
-                        "original_signal_id=%s of_id=%s: %s — retrying in 2s",
-                        original["id"], of_id, exc,
-                    )
-                    time.sleep(2)
-                else:
-                    # ── Case B, attempt 2 — give up ──────────────────────────
-                    set_sl_placed_sync(counter["id"], placed=False)
-                    logger.critical(
-                        "CRITICAL: close_original conditional SL failed after retry — "
-                        "counter is LIVE with NO stop on original. "
-                        "MANUAL INTERVENTION REQUIRED. "
-                        "original_signal_id=%s of_id=%s symbol=%s: %s",
-                        original["id"], of_id, original["symbol"], exc,
-                    )
-            except Exception as exc:
-                # Network / unexpected error — same retry path as Case B
-                if attempt == 1:
-                    logger.warning(
-                        "close_original conditional SL unexpected error (attempt 1/2): "
-                        "original_signal_id=%s of_id=%s: %s — retrying in 2s",
-                        original["id"], of_id, exc,
-                    )
-                    time.sleep(2)
-                else:
-                    set_sl_placed_sync(counter["id"], placed=False)
-                    logger.critical(
-                        "CRITICAL: close_original conditional SL failed after retry — "
-                        "counter is LIVE with NO stop on original. "
-                        "MANUAL INTERVENTION REQUIRED. "
-                        "original_signal_id=%s of_id=%s symbol=%s: %s",
-                        original["id"], of_id, original["symbol"], exc,
-                    )
 
     def _maybe_complete_original_after_counter_tp(
         self, tp_order_id: str, fill_time: str

@@ -210,46 +210,6 @@
         .ic-value { font-size: 1.1rem; font-weight: 800; color: var(--indigo); }
         .ic-sub   { font-size: .72rem; color: var(--muted); margin-top: .25rem; }
 
-        /* Per-timeframe SL toggle switches */
-        .sl-row {
-            display: flex; align-items: center; justify-content: space-between;
-            padding: .6rem 0; border-bottom: 1px solid var(--border);
-        }
-        .sl-row:last-child { border-bottom: none; }
-        .sl-interval { font-weight: 700; font-size: .9rem; }
-        .sl-controls { display: flex; align-items: center; gap: .75rem; }
-        .sl-switch { position: relative; width: 42px; height: 22px; flex-shrink: 0; }
-        .sl-switch input { opacity: 0; width: 0; height: 0; }
-        .sl-slider {
-            position: absolute; cursor: pointer; inset: 0; background: var(--red);
-            border-radius: 22px; transition: background .2s;
-        }
-        .sl-slider::before {
-            content: ""; position: absolute; height: 16px; width: 16px; left: 3px; bottom: 3px;
-            background: #fff; border-radius: 50%; transition: transform .2s;
-        }
-        .sl-switch input:checked + .sl-slider { background: var(--green); }
-        .sl-switch input:checked + .sl-slider::before { transform: translateX(20px); }
-        .sl-remove {
-            background: none; border: none; color: var(--muted); cursor: pointer;
-            font-size: .85rem; padding: 0 .25rem;
-        }
-        .sl-remove:hover { color: var(--red); }
-        .sl-empty { color: var(--muted); font-size: .82rem; padding: .5rem 0; }
-        .sl-add-row { display: flex; gap: .5rem; margin-top: 1rem; }
-        .sl-add-row input { flex: 1; max-width: 220px; }
-        .sl-cutoff-row {
-            display: flex; align-items: center; gap: .75rem; flex-wrap: wrap;
-            padding-bottom: 1rem; margin-bottom: 1rem; border-bottom: 1px solid var(--border);
-        }
-        .sl-cutoff-row input { max-width: 140px; }
-        .sl-cutoff-current { color: var(--muted); font-size: .82rem; }
-        .sl-cutoff-current b { color: var(--text); }
-        .sl-master-row {
-            display: flex; align-items: center; gap: .75rem;
-            padding-bottom: 1rem; margin-bottom: 1rem; border-bottom: 1px solid var(--border);
-        }
-        #sl-master-label { font-size: .85rem; font-weight: 600; }
     </style>
 </head>
 <body>
@@ -421,28 +381,18 @@
         </div>
     </div>
 
-    <!-- ── Section: Stop-Loss by Timeframe ──────────────────────────────── -->
-    <div class="section-label">Stop-Loss by Timeframe</div>
+    <!-- ── Section: Stop-Loss status ────────────────────────────────────── -->
+    <div class="section-label">Stop-Loss</div>
     <div class="panel">
-        <div class="panel-header"><span class="panel-title">Per-timeframe protection switch</span></div>
+        <div class="panel-header"><span class="panel-title">System status</span></div>
         <div style="padding: 1rem 1.25rem;">
-            <div class="sl-master-row" id="sl-master-row">
-                <label class="sl-switch">
-                    <input type="checkbox" id="sl-master-toggle" onchange="toggleSlMasterSwitch(this.checked)">
-                    <span class="sl-slider"></span>
-                </label>
-                <span id="sl-master-label">Loading…</span>
-            </div>
-            <div class="sl-cutoff-row">
-                <span class="sl-cutoff-current" id="sl-cutoff-current">Loading…</span>
-                <input type="text" id="sl-cutoff-interval" class="filter-input" placeholder="e.g. 120 (2h), 1D" />
-                <button class="qbtn" onclick="setSlCutoff()">Set cutoff</button>
-                <button class="qbtn" onclick="clearSlCutoff()">Clear</button>
-            </div>
-            <div id="sl-settings-list"><div class="sl-empty">Loading…</div></div>
-            <div class="sl-add-row">
-                <input type="text" id="sl-new-interval" class="filter-input" placeholder="e.g. 5, 15, 60, 1D" />
-                <button class="qbtn" onclick="addSlTimeframe()">+ Add timeframe</button>
+            <span style="color:var(--red);font-weight:600;font-size:.85rem">
+                Stop-loss permanently removed from the system (client decision, 2026-09-16).
+            </span>
+            <div style="color:var(--muted);font-size:.8rem;margin-top:.4rem">
+                No stop-loss is placed on any timeframe, for any account. Take-profit and
+                limit orders are unaffected. This is hardcoded in order_tracker.py, not a
+                setting — there is nothing to toggle here anymore.
             </div>
         </div>
     </div>
@@ -769,143 +719,15 @@ async function loadApiKeyBadge() {
     } catch(e) { /* silently ignore */ }
 }
 
-// ── Per-timeframe stop-loss switches ────────────────────────────────────────
-function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-}
-
-async function loadSlSettings() {
-    const list = document.getElementById('sl-settings-list');
-    try {
-        const d = await fetch('/dashboard/sl-timeframe-settings').then(r => r.json());
-        const rows = d.settings || [];
-        if (rows.length === 0) {
-            list.innerHTML = '<div class="sl-empty">No timeframes configured yet — every timeframe gets a stop-loss by default. Add one below only to turn it OFF for that timeframe.</div>';
-            return;
-        }
-        list.innerHTML = rows.map(r => `
-            <div class="sl-row">
-                <span class="sl-interval">${escapeHtml(r.interval)}</span>
-                <div class="sl-controls">
-                    <span style="font-size:.75rem;color:var(--muted)">${r.sl_enabled ? 'SL on' : 'SL off'}</span>
-                    <label class="sl-switch">
-                        <input type="checkbox" ${r.sl_enabled ? 'checked' : ''}
-                               onchange="toggleSlTimeframe('${escapeHtml(r.interval)}', this.checked)">
-                        <span class="sl-slider"></span>
-                    </label>
-                    <button class="sl-remove" title="Remove (reverts to default: on)"
-                            onclick="removeSlTimeframe('${escapeHtml(r.interval)}')">✕</button>
-                </div>
-            </div>
-        `).join('');
-    } catch(e) {
-        list.innerHTML = '<div class="sl-empty">Failed to load.</div>';
-    }
-}
-
-async function toggleSlTimeframe(interval, enabled) {
-    await fetch('/dashboard/sl-timeframe-settings', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({interval, sl_enabled: enabled}),
-    });
-    loadSlSettings();
-}
-
-async function addSlTimeframe() {
-    const input = document.getElementById('sl-new-interval');
-    const interval = input.value.trim();
-    if (!interval) return;
-    await fetch('/dashboard/sl-timeframe-settings', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({interval, sl_enabled: false}),
-    });
-    input.value = '';
-    loadSlSettings();
-}
-
-async function removeSlTimeframe(interval) {
-    await fetch('/dashboard/sl-timeframe-settings/' + encodeURIComponent(interval), {method: 'DELETE'});
-    loadSlSettings();
-}
-
-// ── Master kill switch: no SL anywhere, TP/limits unaffected ───────────────
-async function loadSlMasterSwitch() {
-    const toggle = document.getElementById('sl-master-toggle');
-    const label = document.getElementById('sl-master-label');
-    try {
-        const d = await fetch('/dashboard/sl-master-switch').then(r => r.json());
-        toggle.checked = d.sl_enabled;
-        label.textContent = d.sl_enabled
-            ? 'Stop-loss placement: ON'
-            : 'Stop-loss placement: OFF for ALL timeframes (take-profit & limit orders unaffected)';
-        label.style.color = d.sl_enabled ? 'var(--text)' : 'var(--red)';
-    } catch(e) {
-        label.textContent = 'Failed to load.';
-    }
-}
-
-async function toggleSlMasterSwitch(enabled) {
-    await fetch('/dashboard/sl-master-switch', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({sl_enabled: enabled}),
-    });
-    loadSlMasterSwitch();
-}
-
-// ── Stop-loss cutoff ("margin"): disable SL at/above one timeframe ─────────
-async function loadSlCutoff() {
-    const el = document.getElementById('sl-cutoff-current');
-    try {
-        const d = await fetch('/dashboard/sl-cutoff').then(r => r.json());
-        el.innerHTML = d.interval
-            ? `Cutoff: no SL at/above <b>${escapeHtml(d.interval)}</b>`
-            : 'No cutoff set — only the switches below apply.';
-    } catch(e) {
-        el.textContent = 'Failed to load.';
-    }
-}
-
-async function setSlCutoff() {
-    const input = document.getElementById('sl-cutoff-interval');
-    const interval = input.value.trim();
-    if (!interval) return;
-    const res = await fetch('/dashboard/sl-cutoff', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({interval}),
-    });
-    if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        alert(err.detail || 'Failed to set cutoff.');
-        return;
-    }
-    input.value = '';
-    loadSlCutoff();
-}
-
-async function clearSlCutoff() {
-    await fetch('/dashboard/sl-cutoff', {method: 'DELETE'});
-    loadSlCutoff();
-}
-
-document.getElementById('sl-new-interval').addEventListener('keydown', e => {
-    if (e.key === 'Enter') addSlTimeframe();
-});
-document.getElementById('sl-cutoff-interval').addEventListener('keydown', e => {
-    if (e.key === 'Enter') setSlCutoff();
-});
+// SL panel is now a static status banner (see the "Stop-Loss" section above) —
+// stop-loss placement is permanently hardcoded off in order_tracker.py,
+// client decision 2026-09-16. Nothing to load or wire up here anymore.
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 document.querySelector('th[data-col="timestamp"]').classList.add('sort-desc');
 refresh().then(startCountdown);
 loadSummary();
 loadApiKeyBadge();
-loadSlSettings();
-loadSlCutoff();
-loadSlMasterSwitch();
 
 if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/dashboard/sw.js', {scope:'/dashboard/'});
