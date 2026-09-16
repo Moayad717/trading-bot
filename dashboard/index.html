@@ -381,22 +381,6 @@
         </div>
     </div>
 
-    <!-- ── Section: Stop-Loss status ────────────────────────────────────── -->
-    <div class="section-label">Stop-Loss</div>
-    <div class="panel">
-        <div class="panel-header"><span class="panel-title">System status</span></div>
-        <div style="padding: 1rem 1.25rem;">
-            <span style="color:var(--red);font-weight:600;font-size:.85rem">
-                Stop-loss permanently removed from the system (2026-09-16).
-            </span>
-            <div style="color:var(--muted);font-size:.8rem;margin-top:.4rem">
-                No stop-loss is placed on any timeframe, for any account. Take-profit and
-                limit orders are unaffected. This is hardcoded in order_tracker.py, not a
-                setting — there is nothing to toggle here anymore.
-            </div>
-        </div>
-    </div>
-
 </main>
 
 <script>
@@ -718,10 +702,6 @@ async function loadApiKeyBadge() {
         badge.style.display = 'inline';
     } catch(e) { /* silently ignore */ }
 }
-
-// SL panel is now a static status banner (see the "Stop-Loss" section above) —
-// stop-loss placement is permanently hardcoded off in order_tracker.py,
-// removed 2026-09-16. Nothing to load or wire up here anymore.
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 document.querySelector('th[data-col="timestamp"]').classList.add('sort-desc');
