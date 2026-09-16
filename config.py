@@ -32,6 +32,12 @@ class Settings(BaseSettings):
     NET_DELTA_CAP_SHADOW:  bool  = True    # True = log only, never refuse
     NET_DELTA_CACHE_SEC:   int   = 5       # seconds to cache position/order/equity snapshot
 
+    # Position reconciler watch-only mode (2026-09-16) — when True, the
+    # background reconciliation loop only logs what it found and what it
+    # would place; it never calls place_tp_order itself. Per-bot via .env,
+    # not a global default, since it was requested for specific accounts.
+    RECONCILER_WATCH_ONLY: bool = False
+
     @property
     def active_exchange(self) -> str:
         return "bybit"

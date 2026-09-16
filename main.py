@@ -43,11 +43,33 @@ _tp_failure_counts: dict[int, int] = {}
 _tp_giveup: set[int] = set()
 _TP_MAX_FAILURES = 3
 
+# Bybit's own stopOrderType values for a real stop-loss — used to exclude SL
+# orders from TP coverage. NOT triggerPrice presence: confirmed live
+# 2026-09-16 that Bybit's own auto-generated PartialTakeProfit orders also
+# carry a triggerPrice, so a triggerPrice-based filter wrongly excludes a
+# manually-placed TP from coverage too (this caused a real duplicate-TP
+# incident on 2026-09-16 — see main.py's _reconcile_positions docstring).
+_SL_STOP_ORDER_TYPES = {"StopLoss", "PartialStopLoss"}
+
 
 async def _reconcile_positions() -> None:
     """Every 60 s, reconcile open Bybit positions against active TP orders.
 
-    For each naked position qty:
+    Watch-only mode (settings.RECONCILER_WATCH_ONLY, set per-bot via .env,
+    added 2026-09-16): every pass still reads positions and open orders and
+    logs exactly what it found and what it would do (position size, covered
+    qty, naked qty, and the exact order it would place with price and size)
+    — it never calls place_tp_order itself. Requested after two real
+    incidents: (1) the coverage count excluded any order with a
+    triggerPrice, which wrongly excludes Bybit's own PartialTakeProfit
+    orders too, so a manually-placed TP wasn't counted as coverage and a
+    duplicate TP got placed alongside it; (2) a TP got re-suggested for a
+    signal whose position had already closed. Fixed the coverage filter
+    below regardless of mode; watch-only mode means neither incident shape
+    can write anything even if a similar gap surfaces again.
+
+    For each naked position qty (acting mode only — watch-only logs the
+    same information without ever placing anything):
       1. Place individual TP orders for each DB signal that has no TP or a stale one,
          using each signal's own qty and configured take_profit price.
          Updates tp_order_id in DB so WebSocket fill events mark exactly that signal.
@@ -55,6 +77,8 @@ async def _reconcile_positions() -> None:
          fallback bulk TP at avg_price ±0.5%.
     """
     exchange = BybitExchange()
+    dry_run  = settings.RECONCILER_WATCH_ONLY
+    tag      = "WATCH-ONLY" if dry_run else "Reconciliation"
     while True:
         await asyncio.sleep(60)
         try:
@@ -85,14 +109,11 @@ async def _reconcile_positions() -> None:
                 # Scoping by positionIdx (not just symbol+side) avoids counting an
                 # unrelated order on the opposite hedge-mode position as coverage.
                 #
-                # Conditional SL orders (place_conditional_sl) sit on the exact
-                # same symbol+side+positionIdx as a regular TP for that same
-                # position — a long's SL is a Sell/positionIdx=1 order, same as
-                # its TP — so without excluding them here they would count
-                # towards TP coverage and understate naked_qty. Excluded by
-                # orderLinkId suffix (reliable — every SL we place is tagged
-                # "<of_id>_SL") with a triggerPrice fallback for any order that
-                # somehow lacks a parseable tag.
+                # Every close-type order counts as coverage here — TakeProfit,
+                # PartialTakeProfit, and plain reduce-only limit TPs alike.
+                # Only a genuine stop-loss is excluded: Bybit's own
+                # StopLoss/PartialStopLoss stopOrderType, or our own
+                # conditional SL tagged "<of_id>_SL".
                 signals = await get_active_signals_needing_tp(symbol, action)
                 covered_qty = sum(
                     float(o.get("qty", 0))
@@ -101,7 +122,7 @@ async def _reconcile_positions() -> None:
                     and o.get("side") == tp_side
                     and o.get("positionIdx") == position_idx
                     and not str(o.get("orderLinkId", "")).endswith("_SL")
-                    and not o.get("triggerPrice")
+                    and o.get("stopOrderType") not in _SL_STOP_ORDER_TYPES
                 )
                 naked_qty   = round(size - covered_qty, 3)
 
@@ -111,8 +132,8 @@ async def _reconcile_positions() -> None:
                 fallback_tp_price = round(avg_price * (1.005 if pos_side == "Buy" else 0.995), 2)
 
                 logger.info(
-                    "Reconciliation: naked position symbol=%s side=%s size=%s covered=%s naked=%s",
-                    symbol, pos_side, size, covered_qty, naked_qty,
+                    "%s: naked position symbol=%s side=%s size=%s covered=%s naked=%s",
+                    tag, symbol, pos_side, size, covered_qty, naked_qty,
                 )
 
                 # Per-signal TP placement — signals with no TP or a cancelled/stale one,
@@ -147,10 +168,19 @@ async def _reconcile_positions() -> None:
 
                     if sig_qty * tp_price < 5.0:
                         logger.info(
-                            "Reconciliation: skip signal TP sig_id=%s symbol=%s qty=%s "
+                            "%s: skip signal TP sig_id=%s symbol=%s qty=%s "
                             "notional=%.4f below 5 USDT",
-                            sig["id"], symbol, sig_qty, sig_qty * tp_price,
+                            tag, sig["id"], symbol, sig_qty, sig_qty * tp_price,
                         )
+                        continue
+
+                    if dry_run:
+                        logger.info(
+                            "%s: would place TP for sig_id=%s symbol=%s side=%s qty=%s "
+                            "price=%s — no order placed",
+                            tag, sig["id"], symbol, tp_side, sig_qty, tp_price,
+                        )
+                        remaining = round(remaining - sig_qty, 8)
                         continue
 
                     logger.info(
@@ -200,10 +230,19 @@ async def _reconcile_positions() -> None:
                     ghost_notional = ghost_qty * fallback_tp_price
                     if ghost_notional < 5.0:
                         logger.info(
-                            "Reconciliation: skip ghost TP symbol=%s qty=%s notional=%.4f below 5 USDT",
-                            symbol, ghost_qty, ghost_notional,
+                            "%s: skip ghost TP symbol=%s qty=%s notional=%.4f below 5 USDT",
+                            tag, symbol, ghost_qty, ghost_notional,
                         )
                         continue
+
+                    if dry_run:
+                        logger.info(
+                            "%s: would place ghost TP symbol=%s side=%s qty=%s "
+                            "price=%s — no order placed",
+                            tag, symbol, tp_side, ghost_qty, fallback_tp_price,
+                        )
+                        continue
+
                     logger.info(
                         "Reconciliation: ghost position symbol=%s side=%s qty=%s tp_price=%s",
                         symbol, pos_side, ghost_qty, fallback_tp_price,
@@ -229,6 +268,8 @@ async def _reconcile_positions() -> None:
 
             # Only check for cancelled TPs when positions are still open — avoids
             # repeated warnings for stale entries that linger in order history.
+            # Read-only regardless of mode — this only logs a warning, it never
+            # places or cancels anything itself.
             active_symbols = {pos["symbol"] for pos in active}
             if active_symbols:
                 history = exchange.get_order_history(category="linear", settle_coin="USDT", limit=50)
@@ -237,8 +278,8 @@ async def _reconcile_positions() -> None:
                             and o.get("orderStatus") in ("Cancelled", "Rejected")
                             and o.get("symbol") in active_symbols):
                         logger.warning(
-                            "Reconciliation: %s TP detected symbol=%s order_id=%s",
-                            o["orderStatus"], o["symbol"], o.get("orderId"),
+                            "%s: %s TP detected symbol=%s order_id=%s",
+                            tag, o["orderStatus"], o["symbol"], o.get("orderId"),
                         )
 
         except Exception as exc:

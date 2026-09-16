@@ -26,11 +26,24 @@ Background on why these specific scenarios exist:
     regular TP (a long's SL is Sell/positionIdx=1, same as its TP) — without
     excluding it, the coverage sum would count the SL as if it were TP
     coverage and never place the real TP the position needs.
+
+  - Coverage-filter fix + watch-only mode (2026-09-16): the coverage filter
+    used to exclude ANY order carrying a triggerPrice, not just real stop-
+    losses. Confirmed live that Bybit's own auto-generated PartialTakeProfit
+    orders also carry a triggerPrice, so a manually-placed partial TP wasn't
+    counted as coverage and the reconciler placed a duplicate TP on top of
+    it — which then won the race and closed the position via a different
+    price than intended. Fixed to exclude only stopOrderType
+    StopLoss/PartialStopLoss or an orderLinkId ending in "_SL". Separately,
+    settings.RECONCILER_WATCH_ONLY (per-bot via .env) makes the whole
+    function read-only: it still logs position size, covered/naked qty, and
+    the exact order it would place, but never calls place_tp_order.
 """
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import main
+from config import settings
 
 
 def _make_sleep_stopper(after: int):
@@ -214,3 +227,127 @@ def test_reconciliation_qty_is_rounded_to_step():
         f"qty={sent_qty} is not a valid multiple of qtyStep=0.1 — Bybit would "
         f"reject this with 'Qty invalid' exactly as it did live on 2026-09-12."
     )
+
+
+def test_partial_take_profit_counted_as_coverage():
+    """A manually-placed PartialTakeProfit order carries a triggerPrice just
+    like a real SL does, but it is NOT a stop-loss — it must count as
+    coverage. Reproduces the real 2026-09-16 incident: a manual TP wasn't
+    recognised, so the reconciler placed a duplicate TP alongside it."""
+    position = {"symbol": "LINKUSDT", "side": "Buy", "size": "2.6", "avgPrice": "10.71"}
+    manual_partial_tp = {
+        "orderId": "manual-tp-1", "orderLinkId": "", "symbol": "LINKUSDT",
+        "side": "Sell", "qty": "2.6", "positionIdx": 1, "reduceOnly": True,
+        "triggerPrice": "10.904", "stopOrderType": "PartialTakeProfit",
+    }
+    orphan_signal = [{
+        "id": 4242, "quantity": 2.6, "take_profit": 10.904,
+        "tp_order_id": None, "order_id": "entry-4242", "category": "linear",
+    }]
+    exchange = _make_exchange(position, [manual_partial_tp],
+                               place_tp_side_effect=Exception("should not be called"))
+
+    main._tp_failure_counts.clear()
+    main._tp_giveup.clear()
+    asyncio.run(_run_n_cycles(1, exchange, {("LINKUSDT", "buy"): orphan_signal}))
+
+    assert exchange.place_tp_order.call_count == 0, (
+        "place_tp_order was called even though the position is already fully "
+        "covered by a manually-placed PartialTakeProfit order — the "
+        "triggerPrice-based exclusion regressed, or the stopOrderType-based "
+        "fix isn't actually being applied."
+    )
+
+
+def test_real_stop_loss_stop_order_type_still_excluded_from_coverage():
+    """Bybit's own StopLoss/PartialStopLoss stopOrderType must still be
+    excluded from coverage even without an "_SL"-suffixed orderLinkId —
+    the orderLinkId check alone isn't enough for orders Bybit itself
+    classifies as a stop rather than ones we tagged ourselves."""
+    position = {"symbol": "LINKUSDT", "side": "Buy", "size": "4.4", "avgPrice": "11.28"}
+    native_sl = {
+        "orderId": "native-sl-1", "orderLinkId": "", "symbol": "LINKUSDT",
+        "side": "Sell", "qty": "4.4", "positionIdx": 1, "reduceOnly": False,
+        "triggerPrice": "9.500", "stopOrderType": "StopLoss",
+    }
+    signal = [{
+        "id": 5002, "quantity": 4.4, "take_profit": 12.0,
+        "tp_order_id": None, "order_id": "entry-5002", "category": "linear",
+    }]
+    exchange = _make_exchange(position, [native_sl],
+                               place_tp_side_effect=lambda **kw: {"order_id": "new-tp-2"})
+
+    main._tp_failure_counts.clear()
+    main._tp_giveup.clear()
+    asyncio.run(_run_n_cycles(1, exchange, {("LINKUSDT", "buy"): signal}))
+
+    assert exchange.place_tp_order.call_count == 1, (
+        "a native Bybit StopLoss order (no '_SL' orderLinkId tag) was "
+        "wrongly counted as TP coverage — the position never got its real TP."
+    )
+
+
+def test_watch_only_mode_never_places_or_cancels_anything():
+    """settings.RECONCILER_WATCH_ONLY=True must make the whole function
+    read-only — same naked-position shape that would normally place both a
+    per-signal TP and a ghost TP places neither."""
+    position = {"symbol": "LINKUSDT", "side": "Sell", "size": "5.0", "avgPrice": "11.0"}
+    signal = [{
+        "id": 6001, "quantity": 2.0, "take_profit": 10.5,
+        "tp_order_id": None, "order_id": "entry-6001", "category": "linear",
+    }]
+    exchange = _make_exchange(position, [],
+                               place_tp_side_effect=Exception("should not be called in watch-only mode"))
+
+    main._tp_failure_counts.clear()
+    main._tp_giveup.clear()
+    original = settings.RECONCILER_WATCH_ONLY
+    settings.RECONCILER_WATCH_ONLY = True
+    try:
+        asyncio.run(_run_n_cycles(1, exchange, {("LINKUSDT", "sell"): signal}))
+    finally:
+        settings.RECONCILER_WATCH_ONLY = original
+
+    assert exchange.place_tp_order.call_count == 0, (
+        "watch-only mode placed an order — RECONCILER_WATCH_ONLY must make "
+        "the reconciler fully read-only."
+    )
+    exchange.cancel_order.assert_not_called()
+
+
+def test_watch_only_mode_log_lines_never_claim_a_real_placement():
+    """The exact log phrases that mean 'an order was actually placed'
+    ('Reconciliation: placing TP for sig_id', 'Reconciliation: ghost TP
+    placed') must never appear in watch-only mode — only the would-place
+    report. This is the literal thing being confirmed: those two phrases no
+    longer appear once watch-only is on."""
+    position = {"symbol": "LINKUSDT", "side": "Sell", "size": "5.0", "avgPrice": "11.0"}
+    signal = [{
+        "id": 6002, "quantity": 2.0, "take_profit": 10.5,
+        "tp_order_id": None, "order_id": "entry-6002", "category": "linear",
+    }]
+    exchange = _make_exchange(position, [],
+                               place_tp_side_effect=Exception("should not be called in watch-only mode"))
+
+    main._tp_failure_counts.clear()
+    main._tp_giveup.clear()
+
+    info_logs = []
+    orig_info = main.logger.info
+
+    def _capture_info(msg, *args, **kwargs):
+        info_logs.append(msg % args if args else msg)
+        return orig_info(msg, *args, **kwargs)
+
+    original = settings.RECONCILER_WATCH_ONLY
+    settings.RECONCILER_WATCH_ONLY = True
+    try:
+        with patch.object(main.logger, "info", side_effect=_capture_info):
+            asyncio.run(_run_n_cycles(1, exchange, {("LINKUSDT", "sell"): signal}))
+    finally:
+        settings.RECONCILER_WATCH_ONLY = original
+
+    assert not any("Reconciliation: placing TP for sig_id" in m for m in info_logs)
+    assert not any("Reconciliation: ghost TP placed" in m for m in info_logs)
+    assert any("WATCH-ONLY: would place TP for sig_id=6002" in m for m in info_logs)
+    assert any("WATCH-ONLY: would place ghost TP" in m for m in info_logs)
