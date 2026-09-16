@@ -43,16 +43,15 @@
         .logo { font-size: 1rem; font-weight: 700; letter-spacing: -0.02em; }
         .logo span { color: var(--indigo); }
         .header-meta { display: flex; align-items: center; gap: 1.25rem; font-size: 0.78rem; color: var(--muted); }
-        .status-dot {
-            display: inline-block; width: 7px; height: 7px; border-radius: 50%;
-            background: var(--green); margin-right: 5px; vertical-align: middle; transition: background .3s;
+
+        @media (max-width: 640px) {
+            header { padding: 0.7rem 1rem; flex-wrap: wrap; row-gap: 0.4rem; }
+            .header-meta { flex-wrap: wrap; gap: 0.5rem .9rem; font-size: 0.7rem; }
         }
-        .status-dot.loading { background: var(--amber); animation: blink .9s infinite; }
-        .status-dot.error   { background: var(--red); }
-        @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.25} }
 
         /* ── Layout ──────────────────────────────── */
         main { max-width: 1440px; margin: 0 auto; padding: 1.75rem 2rem 3rem; }
+        @media (max-width: 640px) { main { padding: 1.25rem 1rem 2rem; } }
 
         /* ── Section label ───────────────────────── */
         .section-label {
@@ -219,7 +218,6 @@
     <div class="header-meta">
         <span id="balance-badge" style="display:none"></span>
         <span id="api-key-badge" style="display:none"></span>
-        <span id="updated-at"><span class="status-dot loading" id="dot"></span>Loading…</span>
         <span id="next-refresh"></span>
     </div>
 </header>
@@ -629,9 +627,6 @@ async function loadSummary() {
 
 // ── Main refresh ──────────────────────────────────────────────────────────────
 async function refresh() {
-    const info = document.getElementById('updated-at');
-    info.innerHTML = '<span class="status-dot loading" id="dot"></span>Updating…';
-
     try {
         const [countsRes, reportRes] = await Promise.all([
             fetch('/dashboard/signals/counts'),
@@ -659,11 +654,8 @@ async function refresh() {
         document.getElementById('pill-report').textContent = `${report.total_signals} signal${report.total_signals!==1?'s':''}`;
         document.getElementById('breakdown-container').innerHTML = renderBreakdown(report.breakdown);
 
-        const now = new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'});
-        info.innerHTML = `<span class="status-dot" id="dot"></span>Updated ${now}`;
-
     } catch(err) {
-        info.innerHTML = `<span class="status-dot error" id="dot"></span>Error: ${err.message}`;
+        console.error('refresh failed:', err.message);
     }
 
     // Section 4 — refresh signals table (keep current page + filters)
