@@ -24,17 +24,36 @@ _DUPLICATE_LINK_ID_ERRCODE = 110072
 _MAX_LINK_ID_SEQ = 20  # generous cap; TP/CTP get cancelled+replaced repeatedly
 
 
+# Worst-case role suffix a tag can ever get appended: "_CLOSE" plus a 2-digit
+# retry sequence number, up to _MAX_LINK_ID_SEQ (20). Guards against a silent
+# order loss — an of_id long enough to push a tag past Bybit's 36-char limit
+# fails the placement without a visible error: on an entry (allow_sequence=
+# False) the rejection is read as "already placed" and nothing is sent; on a
+# TP/SL the exception is caught and only logged.
+_MAX_SUFFIX = len("_CLOSE") + len(str(_MAX_LINK_ID_SEQ))  # 8
+
+
 def build_order_link_id(of_id: str, role: str) -> str:
-    """<of_id>_<role> — e.g. "1787220720000_51_L_TP". of_id is capped at 18
-    chars in production; role suffixes are at most 5 chars ("_CTP19"), well
-    inside Bybit's 36-char orderLinkId limit."""
+    """<of_id>_<role> — e.g. "260924-2215-0047-13390-13500_CTP" (v2 format:
+    date-time-timeframe-entry_price-tp_price, prices as tickSize-scaled
+    integers, built in Pine) or "1787220720000_51_L_TP" (legacy v1, still
+    resting on the exchange during the transition)."""
+    if len(of_id) + _MAX_SUFFIX > 36:
+        raise ValueError(
+            f"of_id is {len(of_id)} chars; with the worst-case role suffix "
+            f"this exceeds Bybit's 36-char limit: {of_id}"
+        )
     return f"{of_id}_{role}"
 
 
-# Roles that only ever reduce a position — TP/CTP/SL/CLOSE, optionally followed
-# by a retry sequence number (_TP2, _CTP3, ...). Entries (_E/_CE) never get a
-# sequence suffix and are deliberately excluded from this pattern.
-_CLOSING_ROLE_RE = re.compile(r"_(?:TP|CTP|SL|CLOSE)\d*$")
+# Roles that only ever reduce a position — TP/CTP/SL/CLOSE (v1) and
+# ETP/CTP/SL/CLOSE (v2, "TP" renamed to "ETP" to fit the entry+exit price tag
+# format), optionally followed by a retry sequence number (_ETP2, _CTP3, ...).
+# Entries (_E/_CE in v1, _E/_C in v2) never get a sequence suffix and are
+# deliberately excluded from this pattern. Both v1 "TP" and v2 "ETP" are kept
+# in the alternation indefinitely — v1-tagged orders keep resting on the
+# exchange after the switchover and must keep being recognised.
+_CLOSING_ROLE_RE = re.compile(r"[-_](?:ETP|CTP|CLOSE|TP|SL)\d*$")
 
 
 def is_closing_order(order: Dict[str, Any]) -> bool:

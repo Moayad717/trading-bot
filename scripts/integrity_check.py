@@ -124,16 +124,18 @@ def send_telegram(text: str) -> None:
         print(f"Telegram send failed: {exc}")
 
 
-# Same pattern as exchanges.bybit.is_closing_order's role-tag matcher, but
-# used more strictly here: presence of this tag is what makes a direct
-# order-id lookup trustworthy on its own (Bybit guarantees a tag can never
-# be reused by a second, different placement — confirmed live, duplicate
-# orderLinkId is rejected outright, ErrCode 110072). The old reduceOnly flag
-# does NOT carry that same guarantee, so unlike is_closing_order() this does
-# not fall back to it — an order with reduceOnly=True but no real tag (a
-# pre-tagging legacy order) must still go through the slower independent
-# verification below, not be trusted on reduceOnly alone.
-_RELIABLE_TAG_RE = re.compile(r"_(?:TP|CTP|SL|CLOSE)\d*$")
+# Same pattern as exchanges.bybit.is_closing_order's role-tag matcher (kept
+# in sync with it — v1 "TP" and v2 "ETP" roles both included, see
+# BYBIT_QUIRKS.md), but used more strictly here: presence of this tag is what
+# makes a direct order-id lookup trustworthy on its own (Bybit guarantees a
+# tag can never be reused by a second, different placement — confirmed live,
+# duplicate orderLinkId is rejected outright, ErrCode 110072). The old
+# reduceOnly flag does NOT carry that same guarantee, so unlike
+# is_closing_order() this does not fall back to it — an order with
+# reduceOnly=True but no real tag (a pre-tagging legacy order) must still go
+# through the slower independent verification below, not be trusted on
+# reduceOnly alone.
+_RELIABLE_TAG_RE = re.compile(r"[-_](?:ETP|CTP|CLOSE|TP|SL)\d*$")
 
 
 def check_completed_without_evidence() -> list[str]:
