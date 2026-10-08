@@ -3,17 +3,16 @@
 # (safe to run against a live WAL-mode DB a running process still has open —
 # unlike `cp`, which can grab an inconsistent snapshot mid-write).
 #
-# Retains 14 days locally on this same server. This is NOT off-box protection
-# — it guards against DB corruption, a bad migration, or an accidental
-# DELETE/UPDATE, but not against loss of the whole server. True off-box
-# backup needs a destination (S3, another host, etc.) that isn't configured
-# here; wire one in by adding an `rsync`/`aws s3 cp` line at the bottom once
-# a destination exists.
+# One file per bot, overwritten every run — not a dated history. This guards
+# against DB corruption, a bad migration, or an accidental DELETE/UPDATE from
+# the last run backwards only; it is NOT off-box protection and it is NOT a
+# point-in-time archive (yesterday's backup is gone once today's runs). True
+# off-box backup, or multi-day retention, needs a destination (S3, another
+# host, etc.) that isn't configured here.
 set -euo pipefail
 
 BOTS=(trading-bot-live trading-bot-8003 trading-bot-8005 trading-bot-aiko)
 BACKUP_ROOT="/root/db-backups"
-RETAIN_DAYS=14
 STAMP="$(date +%Y-%m-%d_%H-%M-%S)"
 
 mkdir -p "$BACKUP_ROOT"
@@ -28,14 +27,12 @@ for bot in "${BOTS[@]}"; do
         continue
     fi
 
-    dest="$dest_dir/signals_${STAMP}.db"
+    dest="$dest_dir/signals_latest.db"
+    rm -f "$dest" "${dest}.gz"
     sqlite3 "$src" ".backup '$dest'"
     gzip "$dest"
-    echo "backed up $bot -> ${dest}.gz"
+    echo "backed up $bot -> ${dest}.gz (as of ${STAMP})"
 done
-
-echo "--- pruning backups older than ${RETAIN_DAYS} days ---"
-find "$BACKUP_ROOT" -name '*.db.gz' -mtime "+${RETAIN_DAYS}" -print -delete
 
 echo "--- current backup disk usage ---"
 du -sh "$BACKUP_ROOT"
