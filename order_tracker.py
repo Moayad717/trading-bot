@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from pybit.unified_trading import WebSocket
@@ -14,6 +15,7 @@ from db import (
     get_signal_by_sl_order_id_sync,
     get_signal_by_tp_order_id_sync,
     link_auto_tp_sync,
+    mark_entry_filled_by_tag_sync,
     mark_entry_filled_sync,
     mark_tp_completed_sync,
     set_sl_placed_sync,
@@ -22,6 +24,10 @@ from db import (
 )
 from exchanges.bybit import build_order_link_id
 from models.signal import SignalStatus
+
+# Extracts of_id + role from an entry's own tag — "_E" for a plain entry,
+# "_CE" for a counter entry. Used only as the placement-race fallback below.
+_ENTRY_LINK_RE = re.compile(r"^(.*)_(CE|E)$")
 
 if TYPE_CHECKING:
     from exchanges.bybit import BybitExchange
@@ -115,6 +121,26 @@ class OrderTracker:
 
         # ── 1. Entry fill ──────────────────────────────────────────────────────
         was_entry = mark_entry_filled_sync(order_id, fill_time)
+        if not was_entry:
+            # Placement-race fallback (2026-10-14): a limit order whose price
+            # is already marketable can fill before the webhook that placed
+            # it has finished writing order_id into the row — matching by
+            # order_id alone finds nothing in that window. The row still
+            # exists, tagged by its of_id since before the order was even
+            # sent, so match on that instead. Backfills order_id here too,
+            # in case the webhook's own backfill hasn't landed yet.
+            m = _ENTRY_LINK_RE.match(order.get("orderLinkId") or "")
+            if m:
+                of_id, role = m.group(1), m.group(2)
+                was_entry = mark_entry_filled_by_tag_sync(
+                    of_id, role == "CE", order_id, fill_time
+                )
+                if was_entry:
+                    logger.info(
+                        "Entry filled (matched by tag, order_id arrived after the "
+                        "fill — placement race): of_id=%s order_id=%s symbol=%s",
+                        of_id, order_id, order.get("symbol"),
+                    )
         if was_entry:
             logger.info(
                 "Entry filled: order_id=%s symbol=%s",

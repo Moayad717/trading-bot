@@ -58,8 +58,12 @@ _SL_STOP_ORDER_TYPES = {"StopLoss", "PartialStopLoss"}
 # Covers both the current closing roles (ETP/CTP/CLOSE) and the legacy ones
 # (TP/SL) still resting on the exchange from before the rename.
 _CLOSING_TAG_RE = re.compile(r"^(.*)_(?:ETP|CTP|CLOSE|TP|SL)\d*$")
-# Strips an ENTRY order's role suffix (_E or _C) to recover its of_id.
-_ENTRY_TAG_RE = re.compile(r"^(.*)_(?:E|C)$")
+# Strips an ENTRY order's role suffix (_E for a plain entry, _CE for a
+# counter entry — NOT "_C", that was a real bug here until 2026-10-14: it
+# never matched "_CE" at all, since "_CE" doesn't end in "_C", so every
+# counter entry was silently invisible to this whole function) to recover
+# its of_id.
+_ENTRY_TAG_RE = re.compile(r"^(.*)_(?:CE|E)$")
 
 # History pagination depth per gap found — 6 pages of 50 is comfortably more
 # than a 30 s cycle could ever need to explain a newly-formed gap; it is not
@@ -290,8 +294,8 @@ async def reconcile_db_with_executions() -> int:
     """Match active DB signals against Bybit execution history and mark completed ones.
 
     Pass 1 — exact match: tp_order_id → closedSize execution orderId.
-    Pass 2 — fuzzy match: signals with NULL tp_order_id matched by
-              symbol + action + qty + execTime > entry_fill_time.
+    Pass 2 — tag match: signals with NULL tp_order_id matched by their own
+              of_id-derived order tag (see below), not fuzzy qty/timing.
     Returns the total number of signals fixed.
     """
     exchange = BybitExchange()
@@ -328,38 +332,39 @@ async def reconcile_db_with_executions() -> int:
             )
             fixed += 1
 
-    # Pass 2 — fuzzy match for signals with no tp_order_id
+    # Pass 2 — tag match for signals with no tp_order_id (changed 2026-10-14,
+    # was fuzzy qty+timing matching: "a closing execution of about this size,
+    # some time after entry, close enough" — the exact same shape of mistake
+    # already fixed once for TP placement (_fix_missing_tps). It already
+    # caused real false completions before (85 rows on 8003, 182 on 8005)
+    # and nothing stopped it from happening again. Every TP this bot places
+    # carries a tag built from its own of_id — use it, don't guess.
     for sig in await get_active_signals_no_tp():
-        close_side = "Sell" if sig["action"] == "buy" else "Buy"
-        sig_qty    = float(sig["quantity"])
+        of_id = sig.get("of_id")
+        if not of_id:
+            continue  # no tag to match on — pre-dates tagging, left alone
 
-        entry_time_ms = 0
-        if sig.get("entry_fill_time"):
-            try:
-                entry_time_ms = int(
-                    datetime.fromisoformat(sig["entry_fill_time"]).timestamp() * 1000
-                )
-            except (ValueError, OSError):
-                pass
+        role = "CTP" if (sig.get("pattern_type") or "").upper() == "COUNTER" else "TP"
+        expected_tag = build_order_link_id(of_id, role)
 
-        candidates = [
-            ex for ex in executions
-            if ex.get("symbol") == sig["symbol"]
-            and ex["side"] == close_side
-            and abs(float(ex["closedSize"]) - sig_qty) < 0.001
-            and int(ex["execTime"]) > entry_time_ms
-            and ex["orderId"] not in used_order_ids
-        ]
-
-        if not candidates:
+        match = next(
+            (
+                ex for ex in executions
+                if ex.get("symbol") == sig["symbol"]
+                and ex["orderId"] not in used_order_ids
+                and str(ex.get("orderLinkId", "")).startswith(expected_tag)
+            ),
+            None,
+        )
+        if match is None:
             continue
 
-        best = min(candidates, key=lambda x: int(x["execTime"]))
-        await complete_signal_async(sig["id"], _exec_iso(best))
-        used_order_ids.add(best["orderId"])
+        await complete_signal_async(sig["id"], _exec_iso(match))
+        used_order_ids.add(match["orderId"])
         logger.info(
-            "Execution reconciliation (qty match): fixed signal_id=%s symbol=%s qty=%s",
-            sig["id"], sig["symbol"], sig_qty,
+            "Execution reconciliation (tag match): fixed signal_id=%s of_id=%s "
+            "tag=%s",
+            sig["id"], of_id, match.get("orderLinkId"),
         )
         fixed += 1
 

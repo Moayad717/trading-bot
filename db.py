@@ -426,6 +426,51 @@ def mark_entry_filled_sync(order_id: str, fill_time: str) -> bool:
         return cur.rowcount > 0
 
 
+def mark_entry_filled_by_tag_sync(
+    of_id: str, is_counter: bool, order_id: str, fill_time: str
+) -> bool:
+    """Fallback for the placement race (2026-10-14): an entry can fill in
+    under a millisecond, faster than the REST round-trip that places it and
+    learns its order_id. The row now exists from the moment the webhook is
+    received — tagged with its of_id before any network call — so a fill
+    event that arrives before order_id has been backfilled can still be
+    matched by of_id + role instead.
+
+    Matches PENDING or OPEN (whichever stage the normal placement flow
+    hadn't advanced past yet) and backfills order_id here too, in case the
+    REST round-trip's own backfill hasn't happened yet — whichever of the
+    two paths runs first wins, and both converge on the same row. Guarded
+    by pattern_type so an entry's tag never accidentally matches a counter
+    row sharing the same of_id, or vice versa.
+    """
+    pattern_clause = (
+        "pattern_type = 'COUNTER'" if is_counter
+        else "(pattern_type IS NULL OR pattern_type != 'COUNTER')"
+    )
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
+        cur = conn.execute(
+            f"""UPDATE signals
+                   SET status='active', entry_fill_time=?, order_id=?
+                 WHERE of_id=? AND {pattern_clause}
+                   AND status IN ('pending', 'open')""",
+            (fill_time, order_id, of_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def mark_signal_failed_sync(signal_id: int, error_message: str) -> None:
+    """Record a rejected order placement instead of letting it vanish after
+    one log line — the row already exists (inserted before placement was
+    attempted, see webhook.py), so this only needs to flip its status."""
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
+        conn.execute(
+            "UPDATE signals SET status='failed', error_message=? WHERE id=?",
+            (error_message, signal_id),
+        )
+        conn.commit()
+
+
 def set_tp_order_id_sync(order_id: str, tp_order_id: str) -> None:
     """Store the TP order ID so we can match its fill event later."""
     with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
@@ -817,7 +862,7 @@ async def get_active_signals_no_tp() -> List[dict]:
     async with get_db() as db:
         cursor = await db.execute(
             """
-            SELECT id, symbol, action, quantity, entry_fill_time
+            SELECT id, symbol, action, quantity, entry_fill_time, of_id, pattern_type
               FROM signals
              WHERE status = 'active'
                AND tp_order_id IS NULL

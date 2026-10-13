@@ -18,6 +18,7 @@ from db import (
     get_original_signal_by_of_id_sync,
     insert_signal_sync,
     mark_market_order_filled_sync,
+    mark_signal_failed_sync,
     original_of_id_known_sync,
     set_tp_order_id_sync,
     update_signal_status_sync,
@@ -439,12 +440,61 @@ def _handle_cancel_close_original_sync(payload: dict, exchange: Any) -> None:
     )
 
 
+def _original_active_on_bybit(exchange: Any, of_id: str, symbol: str) -> bool:
+    """Fallback for the placement race (2026-10-14): the local DB's status
+    field can lag behind reality by a few seconds if the original's entry
+    filled faster than the webhook that placed it finished writing to the
+    database. Rather than trust that field alone when it says "not active",
+    check Bybit directly for this exact original: a Filled "<of_id>_E" with
+    no fill yet on "<of_id>_TP" means it really is still open, regardless of
+    what the database currently shows. Narrow and best-effort — any lookup
+    error just falls through to False (the existing, safe rejection)."""
+    entry_link_id = build_order_link_id(of_id, "E")
+    try:
+        resp = exchange._client.get_open_orders(
+            category="linear", symbol=symbol, orderLinkId=entry_link_id
+        )
+        lst = resp.get("result", {}).get("list", [])
+        if not lst:
+            resp = exchange._client.get_order_history(
+                category="linear", symbol=symbol, orderLinkId=entry_link_id
+            )
+            lst = resp.get("result", {}).get("list", [])
+        if not lst or lst[0].get("orderStatus") != "Filled":
+            return False
+    except Exception:
+        return False
+
+    tp_link_id = build_order_link_id(of_id, "TP")
+    try:
+        resp = exchange._client.get_order_history(
+            category="linear", symbol=symbol, orderLinkId=tp_link_id
+        )
+        lst = resp.get("result", {}).get("list", [])
+        if lst and lst[0].get("orderStatus") == "Filled":
+            return False  # already closed on its own TP — genuinely not active
+    except Exception:
+        pass  # no TP yet, or lookup hiccup — entry being Filled is what matters
+    return True
+
+
 def _place_order_sync(signal_create: Any, exchange: Any) -> None:
     """Runs in a thread-pool executor after the 200 OK is returned to TradingView.
 
     All Bybit API calls are synchronous (pybit HTTP) so running this in a thread
-    keeps the event loop free to handle the next incoming webhook immediately.
+    keeps the event loop free to handle the next incoming webhook invocation.
     All errors are logged — never raised (no HTTP context available).
+
+    The database row is written BEFORE the order is placed, not after
+    (changed 2026-10-14). Previously: place the order, wait for Bybit's
+    answer, then insert a row keyed by the order_id that answer gave us. A
+    limit order whose price is already marketable can fill in under a
+    millisecond — faster than that REST round-trip — so the WebSocket fill
+    event could arrive before any row existed for it to match against, and
+    was silently dropped: no "Entry filled", no take-profit ever placed, and
+    the DB stuck on an old status. Writing the row first, tagged with its
+    of_id, means a fill event always has something to match against (see
+    mark_entry_filled_by_tag_sync), even before order_id is known.
     """
     try:
         # ── COUNTER guard — must run before ANY exchange call ─────────────────
@@ -461,6 +511,13 @@ def _place_order_sync(signal_create: Any, exchange: Any) -> None:
                 return
 
             original = get_original_signal_by_of_id_sync(of_id)
+            if not original and _original_active_on_bybit(exchange, of_id, signal_create.symbol):
+                logger.info(
+                    "COUNTER guard: DB said not active, Bybit confirmed it is "
+                    "(placement-race fallback) — of_id=%s symbol=%s",
+                    of_id, signal_create.symbol,
+                )
+                original = {"id": "bybit-fallback"}
             if not original:
                 if original_of_id_known_sync(of_id):
                     # Original existed but is no longer active (completed/failed).
@@ -495,20 +552,10 @@ def _place_order_sync(signal_create: Any, exchange: Any) -> None:
                 )
                 return
 
-        try:
-            result = exchange.place_order(signal_create)
-        except Exception as exc:
-            logger.error(
-                "Order placement failed: symbol=%s error=%s",
-                signal_create.symbol, exc,
-            )
-            return
-
-        order_id = result.get("order_id", "")
-
-        if settings.NET_DELTA_CAP_ENABLED:
-            _cancel_resting_if_over_cap(signal_create, exchange, order_id)
-
+        # Insert FIRST — order_id is unknown at this point and stays NULL
+        # until the placement call below returns (or forever, on a rejection
+        # recorded via mark_signal_failed_sync). of_id is already set, which
+        # is all mark_entry_filled_by_tag_sync needs to match an early fill.
         signal = Signal(
             **signal_create.model_dump(),
             timestamp=now_local(),
@@ -522,17 +569,39 @@ def _place_order_sync(signal_create: Any, exchange: Any) -> None:
                 break
             except Exception as exc:
                 if attempt == 2:
+                    # Unlike before, nothing has been placed on Bybit yet at
+                    # this point — but refusing to trade over a transient
+                    # local DB hiccup is the wrong tradeoff (a real signal
+                    # would be silently missed). Log CRITICAL and still
+                    # attempt placement below in degraded/untracked mode,
+                    # same as the old failure shape for this case.
                     logger.critical(
-                        "CRITICAL: order placed on Bybit but DB insert failed after 3 attempts — "
-                        "manual reconciliation required! symbol=%s order_id=%s error=%s",
-                        signal_create.symbol, order_id, exc,
+                        "CRITICAL: DB insert failed after 3 attempts — proceeding to place "
+                        "the order anyway, untracked. symbol=%s error=%s",
+                        signal_create.symbol, exc,
                     )
-                    return
+                    break
                 logger.warning(
                     "DB insert attempt %d/3 failed (symbol=%s): %s — retrying",
                     attempt + 1, signal_create.symbol, exc,
                 )
                 time.sleep(0.3 * (attempt + 1))
+
+        try:
+            result = exchange.place_order(signal_create)
+        except Exception as exc:
+            logger.error(
+                "Order placement failed: symbol=%s error=%s",
+                signal_create.symbol, exc,
+            )
+            if signal_id:
+                mark_signal_failed_sync(signal_id, str(exc))
+            return
+
+        order_id = result.get("order_id", "")
+
+        if settings.NET_DELTA_CAP_ENABLED:
+            _cancel_resting_if_over_cap(signal_create, exchange, order_id)
 
         if signal_create.order_type == OrderType.MARKET:
             fill_time = now_local().isoformat()

@@ -377,7 +377,8 @@ class BybitExchange(BaseExchange):
         """Return position-closing executions (closedSize > 0), newest first.
         Paginates automatically — Bybit caps each page at 100.
         Pass symbol to filter by one contract; omit to get all symbols.
-        Each returned dict has: orderId, execTime (ms str), closedSize, side, symbol.
+        Each returned dict has: orderId, orderLinkId, execTime (ms str),
+        closedSize, side, symbol.
         """
         results: List[Dict[str, Any]] = []
         cursor: str = ""
@@ -397,11 +398,12 @@ class BybitExchange(BaseExchange):
             for ex in page_result.get("list", []):
                 if float(ex.get("closedSize", 0)) > 0:
                     results.append({
-                        "orderId":    ex["orderId"],
-                        "execTime":   ex["execTime"],
-                        "closedSize": ex["closedSize"],
-                        "side":       ex["side"],
-                        "symbol":     ex.get("symbol", ""),
+                        "orderId":     ex["orderId"],
+                        "orderLinkId": ex.get("orderLinkId", ""),
+                        "execTime":    ex["execTime"],
+                        "closedSize":  ex["closedSize"],
+                        "side":        ex["side"],
+                        "symbol":      ex.get("symbol", ""),
                     })
             cursor     = page_result.get("nextPageCursor", "")
             remaining -= min(remaining, 100)
