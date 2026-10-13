@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import uvicorn
 from fastapi import FastAPI
@@ -14,14 +16,15 @@ from config import settings
 from dashboard.routes import router as dashboard_router
 from db import (
     complete_signal_async,
-    get_active_signals_needing_tp,
     get_active_signals_no_tp,
     get_active_signals_with_tp,
+    get_signal_by_order_id_sync,
     init_db_sync,
+    mark_entry_filled_sync,
     set_tp_order_id_sync,
     start_db_write_worker,
 )
-from exchanges.bybit import BybitExchange
+from exchanges.bybit import BybitExchange, build_order_link_id, is_closing_order
 from order_tracker import OrderTracker
 from routers.webhook import router as webhook_router
 
@@ -47,40 +50,66 @@ _TP_MAX_FAILURES = 3
 # orders from TP coverage. NOT triggerPrice presence: confirmed live
 # 2026-09-16 that Bybit's own auto-generated PartialTakeProfit orders also
 # carry a triggerPrice, so a triggerPrice-based filter wrongly excludes a
-# manually-placed TP from coverage too (this caused a real duplicate-TP
-# incident on 2026-09-16 — see main.py's _reconcile_positions docstring).
+# manually-placed TP from coverage too.
 _SL_STOP_ORDER_TYPES = {"StopLoss", "PartialStopLoss"}
 
+# Strips an order's role suffix off its orderLinkId to recover the of_id it
+# belongs to — e.g. "LINK-20261013-1500-0050m-S_TP" -> the part before "_TP".
+# Covers both the current closing roles (ETP/CTP/CLOSE) and the legacy ones
+# (TP/SL) still resting on the exchange from before the rename.
+_CLOSING_TAG_RE = re.compile(r"^(.*)_(?:ETP|CTP|CLOSE|TP|SL)\d*$")
+# Strips an ENTRY order's role suffix (_E or _C) to recover its of_id.
+_ENTRY_TAG_RE = re.compile(r"^(.*)_(?:E|C)$")
 
-async def _reconcile_positions() -> None:
-    """Every 60 s, reconcile open Bybit positions against active TP orders.
+# History pagination depth per gap found — 6 pages of 50 is comfortably more
+# than a 30 s cycle could ever need to explain a newly-formed gap; it is not
+# meant to reach back for old, pre-tagging exposure (see function docstring).
+_HISTORY_PAGES = 6
 
-    Watch-only mode (settings.RECONCILER_WATCH_ONLY, set per-bot via .env,
-    added 2026-09-16): every pass still reads positions and open orders and
-    logs exactly what it found and what it would do (position size, covered
-    qty, naked qty, and the exact order it would place with price and size)
-    — it never calls place_tp_order itself. Requested after two real
-    incidents: (1) the coverage count excluded any order with a
-    triggerPrice, which wrongly excludes Bybit's own PartialTakeProfit
-    orders too, so a manually-placed TP wasn't counted as coverage and a
-    duplicate TP got placed alongside it; (2) a TP got re-suggested for a
-    signal whose position had already closed. Fixed the coverage filter
-    below regardless of mode; watch-only mode means neither incident shape
-    can write anything even if a similar gap surfaces again.
 
-    For each naked position qty (acting mode only — watch-only logs the
-    same information without ever placing anything):
-      1. Place individual TP orders for each DB signal that has no TP or a stale one,
-         using each signal's own qty and configured take_profit price.
-         Updates tp_order_id in DB so WebSocket fill events mark exactly that signal.
-      2. Any qty not accounted for by DB signals (ghost positions) gets a single
-         fallback bulk TP at avg_price ±0.5%.
+def _ms_to_local_iso(ms: str | int) -> str:
+    return (
+        datetime.fromtimestamp(int(ms) / 1000, tz=timezone.utc)
+        .astimezone(ZoneInfo(settings.TIMEZONE))
+        .replace(tzinfo=None)
+        .isoformat()
+    )
+
+
+async def _fix_missing_tps() -> None:
+    """Every 30 s, find entries with no take-profit and give each one its
+    own — confirmed directly against Bybit's own order tags, never a
+    combined/bulk order for leftover qty.
+
+    Replaces the old reconciler (removed 2026-10-14), which fell back to one
+    averaged-price "ghost" TP for any qty it couldn't match to a DB row.
+    That was wrong on two counts, both hit live: (1) its coverage count
+    excluded any order with a triggerPrice, which wrongly excludes Bybit's
+    own PartialTakeProfit orders too, so a manually-placed TP wasn't counted
+    and a duplicate got placed alongside it; (2) even after that was fixed,
+    collapsing several distinct signals into one bulk order throws away the
+    one thing that makes each of them individually auditable — its own tag.
+    Every entry this system places already carries a unique tag
+    (<of_id>_E or _C); the fix is to use it, not guess with an average.
+
+    For each naked position qty:
+      1. Compute coverage the same correct way as before — real resting
+         closing orders, excluding only genuine stop-losses.
+      2. If a gap exists, pull recent order history and find every FILLED
+         entry whose tag has no matching take-profit anywhere (open or in
+         history) — this is checked directly against Bybit, not the local
+         database, since the database is exactly what can fall behind (a
+         missed WebSocket event around a connection drop).
+      3. For each one, look up its own recorded take-profit price by its own
+         entry order_id and place a TP at exactly that price and that
+         entry's own filled qty, tagged to match.
+      4. An entry with no tag, or a tag with no matching database record
+         (pre-dates the tagging system), is left alone and logged — never
+         guessed, never folded into an average.
     """
     exchange = BybitExchange()
-    dry_run  = settings.RECONCILER_WATCH_ONLY
-    tag      = "WATCH-ONLY" if dry_run else "Reconciliation"
     while True:
-        await asyncio.sleep(60)
+        await asyncio.sleep(30)
         try:
             positions = exchange.get_positions(category="linear", settle_coin="USDT")
             active = [p for p in positions if float(p.get("size", 0)) > 0]
@@ -88,33 +117,17 @@ async def _reconcile_positions() -> None:
                 continue
 
             open_orders = exchange.get_all_open_orders(category="linear", settle_coin="USDT")
-            open_order_ids = {o["orderId"] for o in open_orders if "orderId" in o}
 
             for pos in active:
                 symbol       = pos["symbol"]
                 pos_side     = pos["side"]
                 size         = float(pos["size"])
-                avg_price    = float(pos["avgPrice"])
                 position_idx = 1 if pos_side == "Buy" else 2
                 tp_side      = "Sell" if pos_side == "Buy" else "Buy"
-                action       = "buy" if pos_side == "Buy" else "sell"
 
-                # Covered qty is read directly from Bybit's own resting orders for this
-                # exact symbol+side+positionIdx — NOT from DB tp_order_id linkage. The DB
-                # view and Bybit's view can diverge badly (e.g. when several signals'
-                # individual TPs get consolidated into one bulk order): the DB then sees
-                # each of those signals as "uncovered" while Bybit already has the full
-                # qty covered by that one order, and the old DB-based check would hammer
-                # retries forever trying to "fix" a position that was never broken.
-                # Scoping by positionIdx (not just symbol+side) avoids counting an
-                # unrelated order on the opposite hedge-mode position as coverage.
-                #
-                # Every close-type order counts as coverage here — TakeProfit,
+                # Every close-type order counts as coverage — TakeProfit,
                 # PartialTakeProfit, and plain reduce-only limit TPs alike.
-                # Only a genuine stop-loss is excluded: Bybit's own
-                # StopLoss/PartialStopLoss stopOrderType, or our own
-                # conditional SL tagged "<of_id>_SL".
-                signals = await get_active_signals_needing_tp(symbol, action)
+                # Only a genuine stop-loss is excluded.
                 covered_qty = sum(
                     float(o.get("qty", 0))
                     for o in open_orders
@@ -124,152 +137,139 @@ async def _reconcile_positions() -> None:
                     and not str(o.get("orderLinkId", "")).endswith("_SL")
                     and o.get("stopOrderType") not in _SL_STOP_ORDER_TYPES
                 )
-                naked_qty   = round(size - covered_qty, 3)
-
+                naked_qty = round(size - covered_qty, 3)
                 if naked_qty <= 0:
                     continue
 
-                fallback_tp_price = round(avg_price * (1.005 if pos_side == "Buy" else 0.995), 2)
-
                 logger.info(
-                    "%s: naked position symbol=%s side=%s size=%s covered=%s naked=%s",
-                    tag, symbol, pos_side, size, covered_qty, naked_qty,
+                    "Fix-TP: naked position symbol=%s side=%s size=%s covered=%s naked=%s",
+                    symbol, pos_side, size, covered_qty, naked_qty,
                 )
 
-                # Per-signal TP placement — signals with no TP or a cancelled/stale one,
-                # excluding any signal that has already exhausted its retry budget.
-                signals_needing_tp = [
-                    s for s in signals
-                    if (not s.get("tp_order_id") or s["tp_order_id"] not in open_order_ids)
-                    and s["id"] not in _tp_giveup
-                ]
-
-                remaining = naked_qty
-                for sig in signals_needing_tp:
-                    if remaining <= 0:
+                # A gap exists — find exactly which tagged entries explain it,
+                # straight from Bybit's own order history (not the DB).
+                history: list[dict] = []
+                cursor = ""
+                for _ in range(_HISTORY_PAGES):
+                    params = {"category": "linear", "symbol": symbol, "limit": 50}
+                    if cursor:
+                        params["cursor"] = cursor
+                    resp = exchange._client.get_order_history(**params)
+                    result = resp.get("result", {})
+                    history.extend(result.get("list", []))
+                    cursor = result.get("nextPageCursor", "")
+                    if not cursor:
                         break
 
-                    # round_qty (qtyStep-aware) applied AFTER the min(), not
-                    # plain round(x, 3) — confirmed live 2026-09-12: LINK's
-                    # qtyStep is 0.1, and a raw signal qty like 1.7406440... or
-                    # a naked_qty remainder rounds to something like "1.395"
-                    # under plain 3-decimal rounding, which Bybit rejects
-                    # outright ("Qty invalid", ErrCode 10001) since it isn't a
-                    # valid multiple of the step. Rounding after the min()
-                    # (not before) guarantees the final value sent to Bybit is
-                    # always step-aligned regardless of which operand was
-                    # smaller.
-                    sig_qty = exchange.round_qty(
-                        min(float(sig["quantity"]), remaining), symbol, sig.get("category", "linear")
-                    )
-                    raw_tp    = sig.get("take_profit")
-                    tp_price  = float(raw_tp) if raw_tp is not None else fallback_tp_price
-                    entry_oid = sig.get("order_id", "")
+                tp_of_ids: set[str] = set()
+                for o in open_orders + history:
+                    if is_closing_order(o) and o.get("orderLinkId"):
+                        m = _CLOSING_TAG_RE.match(o["orderLinkId"])
+                        if m:
+                            tp_of_ids.add(m.group(1))
 
-                    if sig_qty * tp_price < 5.0:
+                entries = [
+                    o for o in history
+                    if o.get("side") == pos_side
+                    and o.get("positionIdx") == position_idx
+                    and o.get("orderStatus") == "Filled"
+                    and not o.get("reduceOnly")
+                ]
+
+                seen: set[str] = set()
+                for o in entries:
+                    if naked_qty <= 0:
+                        break
+
+                    m = _ENTRY_TAG_RE.match(o.get("orderLinkId") or "")
+                    if not m:
+                        continue  # untagged / pre-dates tagging — never guessed
+                    of_id = m.group(1)
+                    if of_id in seen or of_id in tp_of_ids:
+                        continue
+                    seen.add(of_id)
+
+                    entry_order_id = o.get("orderId", "")
+                    row = get_signal_by_order_id_sync(entry_order_id)
+                    if row is None or row.get("take_profit") is None:
                         logger.info(
-                            "%s: skip signal TP sig_id=%s symbol=%s qty=%s "
-                            "notional=%.4f below 5 USDT",
-                            tag, sig["id"], symbol, sig_qty, sig_qty * tp_price,
+                            "Fix-TP: of_id=%s entry_order_id=%s has no TP and no "
+                            "database record with a take_profit price — left alone, "
+                            "not guessed.",
+                            of_id, entry_order_id,
                         )
                         continue
 
-                    if dry_run:
+                    sig_id = row["id"]
+                    if sig_id in _tp_giveup:
+                        continue
+
+                    tp_price = float(row["take_profit"])
+                    category = row.get("category", "linear")
+                    fill_qty = exchange.round_qty(float(o.get("qty", 0)), symbol, category)
+                    if fill_qty <= 0:
+                        continue
+                    if fill_qty * tp_price < 5.0:
                         logger.info(
-                            "%s: would place TP for sig_id=%s symbol=%s side=%s qty=%s "
-                            "price=%s — no order placed",
-                            tag, sig["id"], symbol, tp_side, sig_qty, tp_price,
+                            "Fix-TP: skip sig_id=%s of_id=%s notional=%.4f below 5 USDT",
+                            sig_id, of_id, fill_qty * tp_price,
                         )
-                        remaining = round(remaining - sig_qty, 8)
                         continue
 
                     logger.info(
-                        "Reconciliation: placing TP for sig_id=%s symbol=%s side=%s qty=%s price=%s",
-                        sig["id"], symbol, tp_side, sig_qty, tp_price,
+                        "Fix-TP: placing individual TP sig_id=%s of_id=%s symbol=%s "
+                        "side=%s qty=%s price=%s",
+                        sig_id, of_id, symbol, tp_side, fill_qty, tp_price,
                     )
                     try:
                         result = exchange.place_tp_order(
                             symbol=symbol,
                             side=tp_side,
-                            qty=sig_qty,
+                            qty=fill_qty,
                             price=tp_price,
                             position_idx=position_idx,
-                            category=sig.get("category", "linear"),
+                            category=category,
+                            order_link_id_base=build_order_link_id(of_id, "TP"),
                         )
                         tp_order_id = result.get("order_id", "")
-                        if tp_order_id and entry_oid:
-                            set_tp_order_id_sync(entry_oid, tp_order_id)
-                        _tp_failure_counts.pop(sig["id"], None)
+                        if not tp_order_id:
+                            raise RuntimeError(f"no order_id in place_tp_order result: {result}")
+
+                        # Catch the row up to the same state order_tracker would
+                        # have left it in had the fill event not been missed.
+                        updated_ms = o.get("updatedTime")
+                        if updated_ms:
+                            mark_entry_filled_sync(entry_order_id, _ms_to_local_iso(updated_ms))
+                        set_tp_order_id_sync(entry_order_id, tp_order_id)
+
+                        _tp_failure_counts.pop(sig_id, None)
                         logger.info(
-                            "Reconciliation: TP placed sig_id=%s tp_id=%s symbol=%s",
-                            sig["id"], tp_order_id, symbol,
+                            "Fix-TP: TP placed sig_id=%s of_id=%s tp_id=%s symbol=%s",
+                            sig_id, of_id, tp_order_id, symbol,
                         )
-                        remaining = round(remaining - sig_qty, 8)
+                        naked_qty = round(naked_qty - fill_qty, 8)
                     except Exception as exc:
-                        fail_count = _tp_failure_counts.get(sig["id"], 0) + 1
-                        _tp_failure_counts[sig["id"]] = fail_count
+                        fail_count = _tp_failure_counts.get(sig_id, 0) + 1
+                        _tp_failure_counts[sig_id] = fail_count
                         if fail_count >= _TP_MAX_FAILURES:
-                            _tp_giveup.add(sig["id"])
+                            _tp_giveup.add(sig_id)
                             logger.critical(
-                                "Reconciliation: GIVING UP on sig_id=%s symbol=%s after %d "
-                                "consecutive failed TP placements — will not retry again this "
-                                "run. MANUAL INTERVENTION REQUIRED. Last error: %s",
-                                sig["id"], symbol, fail_count, exc,
+                                "Fix-TP: GIVING UP on sig_id=%s of_id=%s symbol=%s after %d "
+                                "consecutive failed TP placements — will not retry again "
+                                "this run. MANUAL INTERVENTION REQUIRED. Last error: %s",
+                                sig_id, of_id, symbol, fail_count, exc,
                             )
                         else:
                             logger.error(
-                                "Reconciliation: failed TP for sig_id=%s symbol=%s "
+                                "Fix-TP: failed TP for sig_id=%s of_id=%s symbol=%s "
                                 "(attempt %d/%d): %s",
-                                sig["id"], symbol, fail_count, _TP_MAX_FAILURES, exc,
+                                sig_id, of_id, symbol, fail_count, _TP_MAX_FAILURES, exc,
                             )
-
-                # Ghost bulk TP for qty not covered by any DB signal —
-                # qtyStep-aware rounding, same reasoning as sig_qty above.
-                ghost_qty = exchange.round_qty(remaining, symbol, "linear")
-                if ghost_qty > 0:
-                    ghost_notional = ghost_qty * fallback_tp_price
-                    if ghost_notional < 5.0:
-                        logger.info(
-                            "%s: skip ghost TP symbol=%s qty=%s notional=%.4f below 5 USDT",
-                            tag, symbol, ghost_qty, ghost_notional,
-                        )
-                        continue
-
-                    if dry_run:
-                        logger.info(
-                            "%s: would place ghost TP symbol=%s side=%s qty=%s "
-                            "price=%s — no order placed",
-                            tag, symbol, tp_side, ghost_qty, fallback_tp_price,
-                        )
-                        continue
-
-                    logger.info(
-                        "Reconciliation: ghost position symbol=%s side=%s qty=%s tp_price=%s",
-                        symbol, pos_side, ghost_qty, fallback_tp_price,
-                    )
-                    try:
-                        result = exchange.place_tp_order(
-                            symbol=symbol,
-                            side=tp_side,
-                            qty=ghost_qty,
-                            price=fallback_tp_price,
-                            position_idx=position_idx,
-                            category="linear",
-                        )
-                        logger.info(
-                            "Reconciliation: ghost TP placed symbol=%s side=%s qty=%s tp_id=%s",
-                            symbol, tp_side, ghost_qty, result.get("order_id"),
-                        )
-                    except Exception as exc:
-                        logger.error(
-                            "Reconciliation: failed ghost TP symbol=%s side=%s qty=%s: %s",
-                            symbol, tp_side, ghost_qty, exc,
-                        )
 
             # Only check for cancelled TPs when positions are still open — avoids
             # repeated warnings for stale entries that linger in order history.
-            # Read-only regardless of mode — this only logs a warning, it never
-            # places or cancels anything itself.
+            # Read-only — this only logs a warning, it never places or cancels
+            # anything itself.
             active_symbols = {pos["symbol"] for pos in active}
             if active_symbols:
                 history = exchange.get_order_history(category="linear", settle_coin="USDT", limit=50)
@@ -278,12 +278,12 @@ async def _reconcile_positions() -> None:
                             and o.get("orderStatus") in ("Cancelled", "Rejected")
                             and o.get("symbol") in active_symbols):
                         logger.warning(
-                            "%s: %s TP detected symbol=%s order_id=%s",
-                            tag, o["orderStatus"], o["symbol"], o.get("orderId"),
+                            "Fix-TP: %s TP detected symbol=%s order_id=%s",
+                            o["orderStatus"], o["symbol"], o.get("orderId"),
                         )
 
         except Exception as exc:
-            logger.error("Reconciliation watchdog error: %s", exc)
+            logger.error("Fix-TP loop error: %s", exc)
 
 
 async def reconcile_db_with_executions() -> int:
@@ -389,7 +389,7 @@ async def lifespan(app: FastAPI):
     tracker.start()
     write_worker = start_db_write_worker()
     await reconcile_db_with_executions()  # fix historical backlog on startup
-    watchdog  = asyncio.create_task(_reconcile_positions())
+    watchdog  = asyncio.create_task(_fix_missing_tps())
     exec_sync = asyncio.create_task(_execution_sync_loop())
     yield
     exec_sync.cancel()

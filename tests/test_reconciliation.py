@@ -1,54 +1,56 @@
 """
-Tests for main.py's _reconcile_positions() — the background loop that keeps
-take-profit coverage in sync with what's actually resting on Bybit.
+Tests for main.py's _fix_missing_tps() — the background loop that finds
+entries with no take-profit and gives each one its own, confirmed directly
+against Bybit's own order tags.
 
-Background on why these specific scenarios exist:
+Background — why this replaced the old reconciler (2026-10-14):
 
-  - Coverage-source fix (2026-08-31): the reconciler used to require a DB
-    signal row whose tp_order_id happened to match a currently-open order to
-    count that qty as "covered". When several signals' individual TPs get
-    consolidated into one bulk order (as happened on the 8003 account), the
-    DB view and Bybit's view diverge permanently — DB sees each signal as
-    uncovered while Bybit already has the full qty covered, so the old code
-    hammered retries every 60s forever trying to "fix" a position that was
-    never broken. Confirmed with the real production numbers: DB reported 6.6
-    covered / 99.3 naked while Bybit showed 99.4 fully covered. Fixed by
-    reading covered_qty directly from resting orders (symbol+side+positionIdx),
-    independent of any DB linkage.
+  The previous version computed "naked qty" correctly (position size minus
+  real resting coverage) but, for any leftover qty it couldn't match to a
+  DB row, fell back to ONE combined "ghost" TP at an averaged price. That
+  was wrong twice over, both confirmed live: (1) the coverage filter
+  excluded any order with a triggerPrice, which wrongly excludes Bybit's
+  own PartialTakeProfit orders too, so a manually-placed TP wasn't counted
+  and a duplicate got placed on top of it; (2) even with that fixed,
+  collapsing several distinct signals into one bulk order throws away the
+  one thing that makes each individually auditable — its own tag. Every
+  entry already carries a unique tag (<of_id>_E or _C); this version reads
+  it directly off Bybit instead of guessing with an average.
 
-  - Back-off (same date): after 3 consecutive reconciliation-cycle failures
-    to place a specific signal's TP, that signal is blacklisted for the rest
-    of the process's lifetime and exactly one CRITICAL log line is emitted,
-    instead of repeating the same error every 60s indefinitely.
+  For each naked qty, it now pulls recent order history, finds every filled
+  entry whose tag has no take-profit anywhere (open or in history), looks
+  up THAT signal's own recorded take-profit price by its own entry
+  order_id, and places one TP at exactly that price and that entry's own
+  filled qty. An entry with no tag, or a tag with no matching database
+  record, is left alone and logged — never guessed, never folded into an
+  average.
 
-  - SL-exclusion (2026-08-31, point 2 fix follow-up): a conditional stop-loss
-    order sits on the exact same symbol+side+positionIdx as its position's
-    regular TP (a long's SL is Sell/positionIdx=1, same as its TP) — without
-    excluding it, the coverage sum would count the SL as if it were TP
-    coverage and never place the real TP the position needs.
-
-  - Coverage-filter fix + watch-only mode (2026-09-16): the coverage filter
-    used to exclude ANY order carrying a triggerPrice, not just real stop-
-    losses. Confirmed live that Bybit's own auto-generated PartialTakeProfit
-    orders also carry a triggerPrice, so a manually-placed partial TP wasn't
-    counted as coverage and the reconciler placed a duplicate TP on top of
-    it — which then won the race and closed the position via a different
-    price than intended. Fixed to exclude only stopOrderType
-    StopLoss/PartialStopLoss or an orderLinkId ending in "_SL". Separately,
-    settings.RECONCILER_WATCH_ONLY (per-bot via .env) makes the whole
-    function read-only: it still logs position size, covered/naked qty, and
-    the exact order it would place, but never calls place_tp_order.
+  - Coverage-filter fix (2026-09-16, carried over unchanged): excludes only
+    genuine stop-losses (Bybit's StopLoss/PartialStopLoss stopOrderType, or
+    an orderLinkId ending in "_SL") — not any order with a triggerPrice.
+  - Back-off (carried over unchanged): after 3 consecutive failures to
+    place a specific signal's TP, it is blacklisted for the rest of the
+    process's lifetime and exactly one CRITICAL log line is emitted.
 """
 import asyncio
+import sqlite3
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import main
-from config import settings
+from tests.conftest import insert_signal
+
+
+def _set_columns(db_path: str, signal_id: int, **cols) -> None:
+    conn = sqlite3.connect(db_path)
+    for col, val in cols.items():
+        conn.execute(f"UPDATE signals SET {col}=? WHERE id=?", (val, signal_id))
+    conn.commit()
+    conn.close()
 
 
 def _make_sleep_stopper(after: int):
     """Async sleep replacement: lets `after` calls through, then raises to
-    break out of the reconciler's `while True` loop deterministically."""
+    break out of the loop's `while True` deterministically."""
     calls = {"n": 0}
 
     async def _sleep(_seconds):
@@ -59,30 +61,28 @@ def _make_sleep_stopper(after: int):
     return _sleep
 
 
-async def _run_n_cycles(n: int, exchange_mock, signals_by_symbol_action: dict):
-    """Drive _reconcile_positions() for exactly n loop iterations against a
-    mocked exchange + DB layer, then return cleanly."""
+async def _run_n_cycles(n: int, exchange_mock):
     with patch("main.asyncio.sleep", new=_make_sleep_stopper(n)), \
-         patch("main.BybitExchange", return_value=exchange_mock), \
-         patch("main.get_active_signals_needing_tp", new=AsyncMock(
-             side_effect=lambda symbol, action: signals_by_symbol_action.get((symbol, action), [])
-         )), \
-         patch("main.set_tp_order_id_sync"):
+         patch("main.BybitExchange", return_value=exchange_mock):
         try:
-            await main._reconcile_positions()
+            await main._fix_missing_tps()
         except asyncio.CancelledError:
             pass
 
 
-def _make_exchange(position, open_orders, place_tp_side_effect, qty_step=None):
+def _history_page(orders):
+    """One page of order history, no further cursor — matches how
+    exchange._client.get_order_history(**params) replies."""
+    return {"result": {"list": orders, "nextPageCursor": ""}}
+
+
+def _make_exchange(position, open_orders, history_orders, place_tp_side_effect, qty_step=None):
     ex = MagicMock()
     ex.get_positions.return_value = [position]
     ex.get_all_open_orders.return_value = open_orders
+    ex.get_order_history.return_value = []  # only used by the cancelled-TP check
     ex.place_tp_order.side_effect = place_tp_side_effect
-    ex.get_order_history.return_value = []
-    # Identity by default (existing tests use exact, already-clean quantities);
-    # pass qty_step to exercise real step-rounding behavior, as
-    # test_reconciliation_qty_is_rounded_to_step below does.
+    ex._client.get_order_history.return_value = _history_page(history_orders)
     if qty_step is None:
         ex.round_qty.side_effect = lambda qty, symbol, category="linear": qty
     else:
@@ -94,54 +94,227 @@ def _make_exchange(position, open_orders, place_tp_side_effect, qty_step=None):
     return ex
 
 
-def test_bulk_coverage_recognised():
-    """A position fully covered by one bulk resting order, with no DB signal
-    individually linked to it, must trigger zero redundant TP placements."""
-    position = {"symbol": "LINKUSDT", "side": "Sell", "size": "96.6", "avgPrice": "11.0"}
-    bulk_order = {
-        "orderId": "bulk-order-id", "symbol": "LINKUSDT", "side": "Buy",
-        "qty": "96.6", "positionIdx": 2, "reduceOnly": True,
+def _entry_order(order_id, of_id, side, position_idx, qty, updated_ms=1700000000000):
+    # Role is always "E" for a plain entry regardless of Buy/Sell — direction
+    # lives in the of_id's own L/S suffix, not in the role suffix.
+    return {
+        "orderId": order_id, "orderLinkId": f"{of_id}_E",
+        "symbol": "LINKUSDT", "side": side, "positionIdx": position_idx,
+        "qty": str(qty), "orderStatus": "Filled", "reduceOnly": False,
+        "updatedTime": str(updated_ms),
     }
-    orphan_signals = [
-        {"id": i, "quantity": 1.3, "take_profit": 9.353, "tp_order_id": f"stale-{i}",
-         "order_id": f"entry-{i}", "category": "linear"}
-        for i in range(1015, 1027)
-    ]
-    exchange = _make_exchange(position, [bulk_order],
+
+
+def test_tagged_entry_gets_its_own_individual_tp(tmp_db):
+    """Single tagged entry explaining a naked gap gets its own TP, at its
+    own recorded price — the core case this whole mechanism exists for."""
+    position = {"symbol": "LINKUSDT", "side": "Buy", "size": "2.0", "avgPrice": "11.0", "positionIdx": 1}
+    entry = _entry_order("entry-1", "LINK-20261013-1500-0050m-L", "Buy", 1, 2.0)
+
+    sig_id = insert_signal(tmp_db, action="buy", of_id="LINK-20261013-1500-0050m-L",
+                            quantity=2.0, symbol="LINKUSDT", category="linear", status="active")
+    _set_columns(tmp_db, sig_id, order_id="entry-1", take_profit=11.5)
+
+    exchange = _make_exchange(position, [], [entry],
+                               place_tp_side_effect=lambda **kw: {"order_id": "tp-1"})
+
+    main._tp_failure_counts.clear()
+    main._tp_giveup.clear()
+    asyncio.run(_run_n_cycles(1, exchange))
+
+    exchange.place_tp_order.assert_called_once()
+    kwargs = exchange.place_tp_order.call_args.kwargs
+    assert kwargs["qty"] == 2.0
+    assert kwargs["price"] == 11.5
+    assert kwargs["side"] == "Sell"
+    assert kwargs["order_link_id_base"] == "LINK-20261013-1500-0050m-L_TP"
+
+    conn = sqlite3.connect(tmp_db)
+    row = conn.execute("SELECT status, tp_order_id FROM signals WHERE id=?", (sig_id,)).fetchone()
+    conn.close()
+    assert row == ("active", "tp-1")
+
+
+def test_two_tagged_entries_get_two_separate_tps(tmp_db):
+    """The exact guarantee this mechanism replaced the old one for: two
+    distinct signals making up one naked gap must each get their OWN TP at
+    their OWN price — never a single combined order for the total qty."""
+    position = {"symbol": "LINKUSDT", "side": "Sell", "size": "5.0", "avgPrice": "12.0", "positionIdx": 2}
+    entry_a = _entry_order("entry-a", "LINK-20261013-1000-0040m-S", "Sell", 2, 2.0)
+    entry_b = _entry_order("entry-b", "LINK-20261013-1100-0045m-S", "Sell", 2, 3.0)
+
+    sig_a = insert_signal(tmp_db, action="sell", of_id="LINK-20261013-1000-0040m-S",
+                           quantity=2.0, symbol="LINKUSDT", category="linear", status="active")
+    _set_columns(tmp_db, sig_a, order_id="entry-a", take_profit=11.8)
+    sig_b = insert_signal(tmp_db, action="sell", of_id="LINK-20261013-1100-0045m-S",
+                           quantity=3.0, symbol="LINKUSDT", category="linear", status="active")
+    _set_columns(tmp_db, sig_b, order_id="entry-b", take_profit=11.9)
+
+    placed = []
+    def _side_effect(**kw):
+        placed.append(kw)
+        return {"order_id": f"tp-{len(placed)}"}
+
+    exchange = _make_exchange(position, [], [entry_a, entry_b], place_tp_side_effect=_side_effect)
+
+    main._tp_failure_counts.clear()
+    main._tp_giveup.clear()
+    asyncio.run(_run_n_cycles(1, exchange))
+
+    assert exchange.place_tp_order.call_count == 2, (
+        "two distinct tagged entries must produce two separate TP orders, "
+        "never one combined order for the total naked qty"
+    )
+    qtys_prices = {(round(c["qty"], 3), c["price"]) for c in placed}
+    assert qtys_prices == {(2.0, 11.8), (3.0, 11.9)}
+
+
+def test_untagged_entry_is_left_alone(tmp_db):
+    """An entry with no tag (predates tagging) contributing to a naked gap
+    must never get a guessed/averaged TP — left alone, logged, nothing
+    placed for it."""
+    position = {"symbol": "LINKUSDT", "side": "Buy", "size": "4.0", "avgPrice": "10.0", "positionIdx": 1}
+    untagged_entry = {
+        "orderId": "old-entry", "orderLinkId": "", "symbol": "LINKUSDT", "side": "Buy",
+        "positionIdx": 1, "qty": "4.0", "orderStatus": "Filled", "reduceOnly": False,
+        "updatedTime": "1700000000000",
+    }
+    exchange = _make_exchange(position, [], [untagged_entry],
+                               place_tp_side_effect=Exception("should never be called"))
+
+    main._tp_failure_counts.clear()
+    main._tp_giveup.clear()
+    asyncio.run(_run_n_cycles(1, exchange))
+
+    exchange.place_tp_order.assert_not_called()
+
+
+def test_tagged_entry_with_no_db_record_is_left_alone(tmp_db):
+    """A tagged entry whose database row no longer exists (or never did) is
+    left alone rather than guessed at — only a confirmed, recorded
+    take-profit price is ever used."""
+    position = {"symbol": "LINKUSDT", "side": "Buy", "size": "1.5", "avgPrice": "10.0", "positionIdx": 1}
+    entry = _entry_order("orphan-entry", "LINK-20260101-0000-0010m-L", "Buy", 1, 1.5)
+
+    exchange = _make_exchange(position, [], [entry],
+                               place_tp_side_effect=Exception("should never be called"))
+
+    main._tp_failure_counts.clear()
+    main._tp_giveup.clear()
+    asyncio.run(_run_n_cycles(1, exchange))
+
+    exchange.place_tp_order.assert_not_called()
+
+
+def test_entry_already_covered_by_its_own_tp_is_skipped(tmp_db):
+    """An entry whose tag already has a take-profit resting (or in history)
+    must not get a second one placed for it."""
+    position = {"symbol": "LINKUSDT", "side": "Buy", "size": "2.0", "avgPrice": "11.0", "positionIdx": 1}
+    entry = _entry_order("entry-covered", "LINK-20261013-1500-0050m-L", "Buy", 1, 2.0)
+    existing_tp = {
+        "orderId": "tp-existing", "orderLinkId": "LINK-20261013-1500-0050m-L_TP",
+        "symbol": "LINKUSDT", "side": "Sell", "positionIdx": 1, "qty": "2.0", "reduceOnly": True,
+    }
+
+    sig_id = insert_signal(tmp_db, action="buy", of_id="LINK-20261013-1500-0050m-L",
+                            quantity=2.0, symbol="LINKUSDT", category="linear", status="active")
+    _set_columns(tmp_db, sig_id, order_id="entry-covered", take_profit=11.5)
+
+    exchange = _make_exchange(position, [existing_tp], [entry],
+                               place_tp_side_effect=Exception("should never be called"))
+
+    main._tp_failure_counts.clear()
+    main._tp_giveup.clear()
+    asyncio.run(_run_n_cycles(1, exchange))
+
+    exchange.place_tp_order.assert_not_called()
+
+
+def test_partial_take_profit_counted_as_coverage(tmp_db):
+    """A manually-placed PartialTakeProfit order carries a triggerPrice just
+    like a real SL does, but it is NOT a stop-loss — it must count as
+    coverage, so no gap is even detected."""
+    position = {"symbol": "LINKUSDT", "side": "Buy", "size": "2.6", "avgPrice": "10.71", "positionIdx": 1}
+    manual_partial_tp = {
+        "orderId": "manual-tp-1", "orderLinkId": "", "symbol": "LINKUSDT",
+        "side": "Sell", "qty": "2.6", "positionIdx": 1, "reduceOnly": True,
+        "triggerPrice": "10.904", "stopOrderType": "PartialTakeProfit",
+    }
+    exchange = _make_exchange(position, [manual_partial_tp], [],
                                place_tp_side_effect=Exception("should not be called"))
 
     main._tp_failure_counts.clear()
     main._tp_giveup.clear()
-    asyncio.run(_run_n_cycles(1, exchange, {("LINKUSDT", "sell"): orphan_signals}))
+    asyncio.run(_run_n_cycles(1, exchange))
 
-    assert exchange.place_tp_order.call_count == 0, (
-        "place_tp_order was called for a position Bybit already shows as fully "
-        "covered — the coverage fix regressed, orphaned DB rows are being "
-        "treated as naked again."
+    exchange.place_tp_order.assert_not_called()
+    exchange._client.get_order_history.assert_not_called()  # no gap -> no history pull needed
+
+
+def test_real_stop_loss_stop_order_type_still_excluded_from_coverage(tmp_db):
+    """Bybit's own StopLoss/PartialStopLoss stopOrderType must still be
+    excluded from coverage even without an "_SL"-suffixed orderLinkId."""
+    position = {"symbol": "LINKUSDT", "side": "Buy", "size": "4.4", "avgPrice": "11.28", "positionIdx": 1}
+    native_sl = {
+        "orderId": "native-sl-1", "orderLinkId": "", "symbol": "LINKUSDT",
+        "side": "Sell", "qty": "4.4", "positionIdx": 1, "reduceOnly": False,
+        "triggerPrice": "9.500", "stopOrderType": "StopLoss",
+    }
+    entry = _entry_order("entry-x", "LINK-20261013-1500-0050m-L", "Buy", 1, 4.4)
+    sig_id = insert_signal(tmp_db, action="buy", of_id="LINK-20261013-1500-0050m-L",
+                            quantity=4.4, symbol="LINKUSDT", category="linear", status="active")
+    _set_columns(tmp_db, sig_id, order_id="entry-x", take_profit=12.0)
+
+    exchange = _make_exchange(position, [native_sl], [entry],
+                               place_tp_side_effect=lambda **kw: {"order_id": "new-tp"})
+
+    main._tp_failure_counts.clear()
+    main._tp_giveup.clear()
+    asyncio.run(_run_n_cycles(1, exchange))
+
+    assert exchange.place_tp_order.call_count == 1, (
+        "a native Bybit StopLoss order (no '_SL' orderLinkId tag) was wrongly "
+        "counted as TP coverage — the position never got its real TP."
     )
 
 
-def test_backoff_blacklists_after_3_failures():
-    """A signal whose TP placement always fails gets retried exactly 3 times,
-    then blacklisted with exactly one CRITICAL log line — never a 4th attempt
-    and never a second CRITICAL for the same signal."""
-    position = {"symbol": "LINKUSDT", "side": "Sell", "size": "10.0", "avgPrice": "11.0"}
-    failing_signal = [{
-        "id": 9999, "quantity": 10.0, "take_profit": 11.5,
-        "tp_order_id": None, "order_id": "entry-9999", "category": "linear",
-    }]
-    # Only the per-signal placement (price=11.5) fails; the ghost-bulk
-    # fallback (a different price/call) succeeds harmlessly so it doesn't
-    # pollute the per-signal call count this test isolates.
-    per_signal_calls = {"n": 0}
+def test_qty_rounded_to_step(tmp_db):
+    """The qty sent to place_tp_order must be the entry's own real filled
+    qty, rounded to the symbol's qtyStep — not a derived/guessed amount."""
+    position = {"symbol": "LINKUSDT", "side": "Sell", "size": "1.4", "avgPrice": "11.0", "positionIdx": 2}
+    entry = _entry_order("entry-step", "LINK-20261013-0900-0043m-S", "Sell", 2, "1.7406440382941688")
 
-    def _side_effect(**kwargs):
-        if kwargs.get("price") == 11.5:
-            per_signal_calls["n"] += 1
-            raise RuntimeError("simulated Bybit error")
-        return {"order_id": "ghost-tp-id"}
+    sig_id = insert_signal(tmp_db, action="sell", of_id="LINK-20261013-0900-0043m-S",
+                            quantity=1.7406440382941688, symbol="LINKUSDT", category="linear", status="active")
+    _set_columns(tmp_db, sig_id, order_id="entry-step", take_profit=10.88714)
 
-    exchange = _make_exchange(position, [], place_tp_side_effect=_side_effect)
+    exchange = _make_exchange(position, [], [entry],
+                               place_tp_side_effect=lambda **kw: {"order_id": "tp-ok"},
+                               qty_step=0.1)
+
+    main._tp_failure_counts.clear()
+    main._tp_giveup.clear()
+    asyncio.run(_run_n_cycles(1, exchange))
+
+    assert exchange.place_tp_order.call_count == 1
+    sent_qty = exchange.place_tp_order.call_args.kwargs["qty"]
+    assert (sent_qty * 10) == int(sent_qty * 10), (
+        f"qty={sent_qty} is not a valid multiple of qtyStep=0.1"
+    )
+
+
+def test_backoff_blacklists_after_3_failures(tmp_db):
+    """A signal whose TP placement always fails gets retried exactly 3
+    times, then blacklisted with exactly one CRITICAL log line."""
+    position = {"symbol": "LINKUSDT", "side": "Sell", "size": "10.0", "avgPrice": "11.0", "positionIdx": 2}
+    entry = _entry_order("entry-fail", "LINK-20261013-0800-0060m-S", "Sell", 2, 10.0)
+
+    sig_id = insert_signal(tmp_db, action="sell", of_id="LINK-20261013-0800-0060m-S",
+                            quantity=10.0, symbol="LINKUSDT", category="linear", status="active")
+    _set_columns(tmp_db, sig_id, order_id="entry-fail", take_profit=11.5)
+
+    exchange = _make_exchange(position, [], [entry],
+                               place_tp_side_effect=RuntimeError("simulated Bybit error"))
 
     main._tp_failure_counts.clear()
     main._tp_giveup.clear()
@@ -154,200 +327,15 @@ def test_backoff_blacklists_after_3_failures():
         return orig_critical(msg, *args, **kwargs)
 
     with patch.object(main.logger, "critical", side_effect=_capture_critical):
-        asyncio.run(_run_n_cycles(5, exchange, {("LINKUSDT", "sell"): failing_signal}))
+        asyncio.run(_run_n_cycles(5, exchange))
 
-    assert per_signal_calls["n"] == 3, (
+    assert exchange.place_tp_order.call_count == 3, (
         f"expected exactly 3 placement attempts before backoff kicks in, got "
-        f"{per_signal_calls['n']}"
+        f"{exchange.place_tp_order.call_count}"
     )
-    assert 9999 in main._tp_giveup, "signal was not blacklisted after 3 failures"
-    giveup_logs = [m for m in critical_logs if "GIVING UP" in m and "9999" in m]
+    assert sig_id in main._tp_giveup, "signal was not blacklisted after 3 failures"
+    giveup_logs = [m for m in critical_logs if "GIVING UP" in m and str(sig_id) in m]
     assert len(giveup_logs) == 1, (
         f"expected exactly 1 CRITICAL giveup log, got {len(giveup_logs)} — "
         f"'log once, not every cycle' requirement violated"
     )
-
-
-def test_sl_orders_excluded_from_coverage():
-    """A conditional SL order sitting on the same side+positionIdx as its
-    position's TP must not be counted as TP coverage."""
-    position = {"symbol": "LINKUSDT", "side": "Buy", "size": "4.4", "avgPrice": "11.28"}
-    sl_order = {
-        "orderId": "sl-order-1", "orderLinkId": "flow1_SL", "symbol": "LINKUSDT",
-        "side": "Sell", "qty": "4.4", "positionIdx": 1, "reduceOnly": False,
-        "triggerPrice": "9.500",
-    }
-    signal = [{
-        "id": 5001, "quantity": 4.4, "take_profit": 12.0,
-        "tp_order_id": None, "order_id": "entry-5001", "category": "linear",
-    }]
-    exchange = _make_exchange(position, [sl_order],
-                               place_tp_side_effect=lambda **kw: {"order_id": "new-tp-1"})
-
-    main._tp_failure_counts.clear()
-    main._tp_giveup.clear()
-    asyncio.run(_run_n_cycles(1, exchange, {("LINKUSDT", "buy"): signal}))
-
-    assert exchange.place_tp_order.call_count == 1, (
-        "expected the reconciler to place a real TP — the SL order at the same "
-        "side+positionIdx was incorrectly counted as TP coverage, so the "
-        "position never got its actual take-profit."
-    )
-
-
-def test_reconciliation_qty_is_rounded_to_step():
-    """The qty actually sent to place_tp_order must always be a valid
-    multiple of the symbol's qtyStep — not merely rounded to 3 decimal
-    places. Confirmed live 2026-09-12: a naked_qty remainder of 1.395 (not a
-    multiple of LINK's 0.1 step) was sent as-is and Bybit rejected it
-    outright ("Qty invalid", ErrCode 10001), repeating on every reconciliation
-    cycle until the 3-strike backoff gave up — leaving a signal with no TP
-    at all. round_qty must be applied AFTER the min(sig_qty, remaining), not
-    a plain round(x, 3) before it, since either operand can be the
-    non-step-aligned one.
-    """
-    position = {"symbol": "LINKUSDT", "side": "Sell", "size": "1.4", "avgPrice": "11.0"}
-    # Deliberately not a multiple of 0.1 — the exact shape of the real bug.
-    signal = [{
-        "id": 1262, "quantity": 1.7406440382941688, "take_profit": 11.88714,
-        "tp_order_id": None, "order_id": "entry-1262", "category": "linear",
-    }]
-    exchange = _make_exchange(
-        position, [], place_tp_side_effect=lambda **kw: {"order_id": "tp-ok"},
-        qty_step=0.1,
-    )
-
-    main._tp_failure_counts.clear()
-    main._tp_giveup.clear()
-    asyncio.run(_run_n_cycles(1, exchange, {("LINKUSDT", "sell"): signal}))
-
-    assert exchange.place_tp_order.call_count == 1
-    sent_qty = exchange.place_tp_order.call_args.kwargs["qty"]
-    assert (sent_qty * 10) == int(sent_qty * 10), (
-        f"qty={sent_qty} is not a valid multiple of qtyStep=0.1 — Bybit would "
-        f"reject this with 'Qty invalid' exactly as it did live on 2026-09-12."
-    )
-
-
-def test_partial_take_profit_counted_as_coverage():
-    """A manually-placed PartialTakeProfit order carries a triggerPrice just
-    like a real SL does, but it is NOT a stop-loss — it must count as
-    coverage. Reproduces the real 2026-09-16 incident: a manual TP wasn't
-    recognised, so the reconciler placed a duplicate TP alongside it."""
-    position = {"symbol": "LINKUSDT", "side": "Buy", "size": "2.6", "avgPrice": "10.71"}
-    manual_partial_tp = {
-        "orderId": "manual-tp-1", "orderLinkId": "", "symbol": "LINKUSDT",
-        "side": "Sell", "qty": "2.6", "positionIdx": 1, "reduceOnly": True,
-        "triggerPrice": "10.904", "stopOrderType": "PartialTakeProfit",
-    }
-    orphan_signal = [{
-        "id": 4242, "quantity": 2.6, "take_profit": 10.904,
-        "tp_order_id": None, "order_id": "entry-4242", "category": "linear",
-    }]
-    exchange = _make_exchange(position, [manual_partial_tp],
-                               place_tp_side_effect=Exception("should not be called"))
-
-    main._tp_failure_counts.clear()
-    main._tp_giveup.clear()
-    asyncio.run(_run_n_cycles(1, exchange, {("LINKUSDT", "buy"): orphan_signal}))
-
-    assert exchange.place_tp_order.call_count == 0, (
-        "place_tp_order was called even though the position is already fully "
-        "covered by a manually-placed PartialTakeProfit order — the "
-        "triggerPrice-based exclusion regressed, or the stopOrderType-based "
-        "fix isn't actually being applied."
-    )
-
-
-def test_real_stop_loss_stop_order_type_still_excluded_from_coverage():
-    """Bybit's own StopLoss/PartialStopLoss stopOrderType must still be
-    excluded from coverage even without an "_SL"-suffixed orderLinkId —
-    the orderLinkId check alone isn't enough for orders Bybit itself
-    classifies as a stop rather than ones we tagged ourselves."""
-    position = {"symbol": "LINKUSDT", "side": "Buy", "size": "4.4", "avgPrice": "11.28"}
-    native_sl = {
-        "orderId": "native-sl-1", "orderLinkId": "", "symbol": "LINKUSDT",
-        "side": "Sell", "qty": "4.4", "positionIdx": 1, "reduceOnly": False,
-        "triggerPrice": "9.500", "stopOrderType": "StopLoss",
-    }
-    signal = [{
-        "id": 5002, "quantity": 4.4, "take_profit": 12.0,
-        "tp_order_id": None, "order_id": "entry-5002", "category": "linear",
-    }]
-    exchange = _make_exchange(position, [native_sl],
-                               place_tp_side_effect=lambda **kw: {"order_id": "new-tp-2"})
-
-    main._tp_failure_counts.clear()
-    main._tp_giveup.clear()
-    asyncio.run(_run_n_cycles(1, exchange, {("LINKUSDT", "buy"): signal}))
-
-    assert exchange.place_tp_order.call_count == 1, (
-        "a native Bybit StopLoss order (no '_SL' orderLinkId tag) was "
-        "wrongly counted as TP coverage — the position never got its real TP."
-    )
-
-
-def test_watch_only_mode_never_places_or_cancels_anything():
-    """settings.RECONCILER_WATCH_ONLY=True must make the whole function
-    read-only — same naked-position shape that would normally place both a
-    per-signal TP and a ghost TP places neither."""
-    position = {"symbol": "LINKUSDT", "side": "Sell", "size": "5.0", "avgPrice": "11.0"}
-    signal = [{
-        "id": 6001, "quantity": 2.0, "take_profit": 10.5,
-        "tp_order_id": None, "order_id": "entry-6001", "category": "linear",
-    }]
-    exchange = _make_exchange(position, [],
-                               place_tp_side_effect=Exception("should not be called in watch-only mode"))
-
-    main._tp_failure_counts.clear()
-    main._tp_giveup.clear()
-    original = settings.RECONCILER_WATCH_ONLY
-    settings.RECONCILER_WATCH_ONLY = True
-    try:
-        asyncio.run(_run_n_cycles(1, exchange, {("LINKUSDT", "sell"): signal}))
-    finally:
-        settings.RECONCILER_WATCH_ONLY = original
-
-    assert exchange.place_tp_order.call_count == 0, (
-        "watch-only mode placed an order — RECONCILER_WATCH_ONLY must make "
-        "the reconciler fully read-only."
-    )
-    exchange.cancel_order.assert_not_called()
-
-
-def test_watch_only_mode_log_lines_never_claim_a_real_placement():
-    """The exact log phrases that mean 'an order was actually placed'
-    ('Reconciliation: placing TP for sig_id', 'Reconciliation: ghost TP
-    placed') must never appear in watch-only mode — only the would-place
-    report. This is the literal thing being confirmed: those two phrases no
-    longer appear once watch-only is on."""
-    position = {"symbol": "LINKUSDT", "side": "Sell", "size": "5.0", "avgPrice": "11.0"}
-    signal = [{
-        "id": 6002, "quantity": 2.0, "take_profit": 10.5,
-        "tp_order_id": None, "order_id": "entry-6002", "category": "linear",
-    }]
-    exchange = _make_exchange(position, [],
-                               place_tp_side_effect=Exception("should not be called in watch-only mode"))
-
-    main._tp_failure_counts.clear()
-    main._tp_giveup.clear()
-
-    info_logs = []
-    orig_info = main.logger.info
-
-    def _capture_info(msg, *args, **kwargs):
-        info_logs.append(msg % args if args else msg)
-        return orig_info(msg, *args, **kwargs)
-
-    original = settings.RECONCILER_WATCH_ONLY
-    settings.RECONCILER_WATCH_ONLY = True
-    try:
-        with patch.object(main.logger, "info", side_effect=_capture_info):
-            asyncio.run(_run_n_cycles(1, exchange, {("LINKUSDT", "sell"): signal}))
-    finally:
-        settings.RECONCILER_WATCH_ONLY = original
-
-    assert not any("Reconciliation: placing TP for sig_id" in m for m in info_logs)
-    assert not any("Reconciliation: ghost TP placed" in m for m in info_logs)
-    assert any("WATCH-ONLY: would place TP for sig_id=6002" in m for m in info_logs)
-    assert any("WATCH-ONLY: would place ghost TP" in m for m in info_logs)
