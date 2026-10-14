@@ -381,6 +381,64 @@ def check_new_duplicate_tp_order_id() -> list[str]:
     return findings
 
 
+def check_stale_tp_coverage() -> list[str]:
+    """Every active signal with a saved tp_order_id must still have that
+    order actually resting (or at least traceable) on Bybit. A pooled
+    position with many individually-tagged TPs gets auto-trimmed by Bybit
+    itself (CancelByReduceOnly) whenever total resting coverage briefly
+    exceeds the position size — that can cancel one specific signal's own
+    TP even while the position as a whole stays fully covered by other
+    orders. When that happens the DB keeps claiming coverage from a dead
+    order, and nothing else catches it (confirmed live 2026-10-14: signals
+    1601/1643/1678/1332 on 8003, all found this way, since cleared).
+
+    Unlike the other checks here, this isn't scoped to LOOKBACK_MINUTES —
+    it's "is this currently true", not "did this just happen", so there's
+    no natural time window. Resolving a finding is a manual step (the
+    dashboard's clear-stale-tp action, see dashboard/routes.py) — once
+    cleared, the row stops matching the query below and naturally stops
+    appearing here, same as a fixed signal drops out of check #1. Until
+    then this will keep reporting it on every run, which is intentional,
+    not spam: it means the condition is still real.
+    """
+    conn = sqlite3.connect(settings.DB_PATH, timeout=5)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        """SELECT id, of_id, symbol, tp_order_id
+             FROM signals
+            WHERE status='active' AND tp_order_id IS NOT NULL"""
+    ).fetchall()
+    conn.close()
+    if not rows:
+        return []
+
+    ex = BybitExchange()
+    open_orders = ex.get_all_open_orders(category="linear", settle_coin="USDT")
+    open_ids = {o["orderId"] for o in open_orders}
+
+    findings = []
+    for r in rows:
+        sig = dict(r)
+        tp_oid = sig["tp_order_id"]
+        if tp_oid in open_ids:
+            continue
+        try:
+            resp = ex._client.get_order_history(
+                category="linear", symbol=sig["symbol"], orderId=tp_oid
+            )
+            lst = resp.get("result", {}).get("list", [])
+            order_status = lst[0].get("orderStatus") if lst else "NotFound"
+        except Exception as exc:
+            order_status = f"LookupFailed: {exc}"
+        findings.append(
+            f"sig_id={sig['id']} of_id={sig['of_id']} symbol={sig['symbol']} "
+            f"tp_order_id={tp_oid} status={order_status} — saved TP is not "
+            f"actually resting on Bybit. See /dashboard/positions/coverage "
+            f"to review and clear."
+        )
+    return findings
+
+
 def main() -> None:
     findings: list[str] = []
     try:
@@ -399,6 +457,10 @@ def main() -> None:
         findings.extend(check_new_duplicate_tp_order_id())
     except Exception as exc:
         findings.append(f"duplicate-tp_order_id check itself failed: {exc}")
+    try:
+        findings.extend(check_stale_tp_coverage())
+    except Exception as exc:
+        findings.append(f"stale-tp-coverage check itself failed: {exc}")
 
     if not findings:
         print(f"[{BOT_NAME}] clean — no issues in the last {LOOKBACK_MINUTES}m")
