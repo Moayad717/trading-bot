@@ -189,6 +189,34 @@ def test_untagged_entry_is_left_alone(tmp_db):
     exchange.place_tp_order.assert_not_called()
 
 
+def test_cancelled_tp_warning_logs_once_per_order_id(tmp_db, caplog):
+    """The 'Fix-TP: Cancelled TP detected' warning used to repeat every
+    cycle for as long as the same cancelled order stayed within the
+    last-50 order-history window (2026-10-14, reported as log spam). It
+    must still fire once, but never again for the same order_id."""
+    position = {"symbol": "LINKUSDT", "side": "Buy", "size": "2.0", "avgPrice": "11.0", "positionIdx": 1}
+    covering_tp = {
+        "symbol": "LINKUSDT", "side": "Sell", "positionIdx": 1, "qty": "2.0",
+        "orderLinkId": "flow1_TP", "reduceOnly": True,
+    }
+    exchange = _make_exchange(position, [covering_tp], [],
+                               place_tp_side_effect=Exception("should never be called"))
+    exchange.get_order_history.return_value = [{
+        "orderId": "cancelled-tp-1", "symbol": "LINKUSDT", "reduceOnly": True,
+        "orderStatus": "Cancelled",
+    }]
+
+    main._tp_failure_counts.clear()
+    main._tp_giveup.clear()
+    main._cancelled_tp_warned.clear()
+    with caplog.at_level("WARNING"):
+        asyncio.run(_run_n_cycles(3, exchange))
+
+    warnings = [r for r in caplog.records if "Cancelled TP detected" in r.message]
+    assert len(warnings) == 1, "must warn exactly once across 3 cycles, not once per cycle"
+    exchange.place_tp_order.assert_not_called()  # fully covered — no placement either
+
+
 def test_tagged_entry_with_no_db_record_is_left_alone(tmp_db):
     """A tagged entry whose database row no longer exists (or never did) is
     left alone rather than guessed at — only a confirmed, recorded

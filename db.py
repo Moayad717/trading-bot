@@ -888,6 +888,50 @@ async def get_active_signals_with_tp() -> List[dict]:
         return [_row_to_dict(r) for r in rows]
 
 
+async def get_active_signals_with_tp_full() -> List[dict]:
+    """Same set as get_active_signals_with_tp, with the extra columns the
+    read-only coverage report (dashboard/routes.py) needs to describe each
+    one — not just enough to match an execution, but enough to show a human
+    what's actually at stake (2026-10-14)."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT id, of_id, symbol, action, quantity, take_profit,
+                   tp_order_id, pattern_type
+              FROM signals
+             WHERE status = 'active'
+               AND tp_order_id IS NOT NULL
+            """
+        )
+        rows = await cursor.fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+
+def clear_stale_tp_order_id_sync(signal_id: int, expected_tp_order_id: str) -> bool:
+    """Manual-only correction (2026-10-14): clears tp_order_id back to NULL
+    on a signal whose saved TP order turned out to be dead on Bybit
+    (cancelled/rejected, usually from Bybit's own CancelByReduceOnly
+    trimming an over-covered pooled position) — never called automatically,
+    only from the dashboard's explicit clear action, which re-verifies
+    against Bybit first. The expected_tp_order_id guard means a tp_order_id
+    that changed since the report was generated (a race with a legitimate
+    update) is left alone instead of being wiped by mistake.
+
+    Deliberately does not touch status — the signal stays 'active'; this
+    only stops the DB claiming coverage from an order that no longer
+    exists. Matches the project's standing rule: no automatic repairs to
+    position state, only manual ones a human explicitly triggers.
+    """
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
+        cur = conn.execute(
+            """UPDATE signals SET tp_order_id = NULL
+                 WHERE id = ? AND tp_order_id = ? AND status = 'active'""",
+            (signal_id, expected_tp_order_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
 async def get_naked_active_positions() -> List[dict]:
     """Return active signals that have filled but have no TP order placed yet."""
     async with get_db() as db:

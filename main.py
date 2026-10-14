@@ -46,6 +46,13 @@ _tp_failure_counts: dict[int, int] = {}
 _tp_giveup: set[int] = set()
 _TP_MAX_FAILURES = 3
 
+# Order IDs already warned about for "Cancelled/Rejected TP detected" below —
+# without this, the same cancelled order repeats the warning every cycle for
+# as long as it stays within the last-50 order-history window (2026-10-14,
+# reported as log spam). Read-only either way; this only limits how often we
+# say it, never what we do.
+_cancelled_tp_warned: set[str] = set()
+
 # Bybit's own stopOrderType values for a real stop-loss — used to exclude SL
 # orders from TP coverage. NOT triggerPrice presence: confirmed live
 # 2026-09-16 that Bybit's own auto-generated PartialTakeProfit orders also
@@ -273,14 +280,20 @@ async def _fix_missing_tps() -> None:
             # Only check for cancelled TPs when positions are still open — avoids
             # repeated warnings for stale entries that linger in order history.
             # Read-only — this only logs a warning, it never places or cancels
-            # anything itself.
+            # anything itself. Each order_id warns at most once per process
+            # lifetime (_cancelled_tp_warned) — previously this repeated every
+            # cycle for as long as the same cancelled order stayed within the
+            # last-50 window, reported as log spam on 2026-10-14.
             active_symbols = {pos["symbol"] for pos in active}
             if active_symbols:
                 history = exchange.get_order_history(category="linear", settle_coin="USDT", limit=50)
                 for o in history:
+                    order_id = o.get("orderId")
                     if (o.get("reduceOnly")
                             and o.get("orderStatus") in ("Cancelled", "Rejected")
-                            and o.get("symbol") in active_symbols):
+                            and o.get("symbol") in active_symbols
+                            and order_id not in _cancelled_tp_warned):
+                        _cancelled_tp_warned.add(order_id)
                         logger.warning(
                             "Fix-TP: %s TP detected symbol=%s order_id=%s",
                             o["orderStatus"], o["symbol"], o.get("orderId"),

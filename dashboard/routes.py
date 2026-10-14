@@ -12,7 +12,9 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from db import (
+    clear_stale_tp_order_id_sync,
     delete_sl_timeframe_setting_sync,
+    get_active_signals_with_tp_full,
     get_all_signals,
     get_all_signals_for_summary,
     get_daily_report,
@@ -611,3 +613,130 @@ async def stats_summary() -> Dict[str, Any]:
         "best_session":   _best_by_same_day_rate(by_session),
         "best_combination": best_combo,
     }
+
+
+# ── TP coverage report (2026-10-14) ───────────────────────────────────────────
+#
+# A pooled Bybit position with many individually-tagged TPs gets auto-trimmed
+# by Bybit itself (CancelByReduceOnly) whenever total resting coverage briefly
+# exceeds the position size — confirmed live for signals 1601/1643/1678 on
+# 8003, each cancelled this way at some point after being placed. The position
+# as a whole usually stays fully covered by other signals' orders when this
+# happens, so there's no naked exposure — but the DB keeps claiming coverage
+# from a specific order that's actually dead, and nothing surfaces that
+# automatically. This read-only report finds that drift. The one write action
+# it offers only clears a stale reference — it never cancels or places
+# anything on Bybit, matching the project's standing rule that repairs to
+# position state must be manual and explicit, never silent.
+
+@router.get(
+    "/positions/coverage",
+    summary="Read-only: active signals whose saved TP order is no longer resting on Bybit",
+)
+async def positions_coverage() -> Dict[str, Any]:
+    from exchanges.bybit import BybitExchange
+
+    signals = await get_active_signals_with_tp_full()
+    if not signals:
+        return {"stale": [], "count": 0}
+
+    def _check() -> List[Dict[str, Any]]:
+        exchange = BybitExchange()
+        open_orders = exchange.get_all_open_orders(category="linear", settle_coin="USDT")
+        open_ids = {o["orderId"] for o in open_orders}
+
+        stale: List[Dict[str, Any]] = []
+        for sig in signals:
+            tp_oid = sig["tp_order_id"]
+            if tp_oid in open_ids:
+                continue  # still resting — nothing to report
+            try:
+                resp = exchange._client.get_order_history(
+                    category="linear", symbol=sig["symbol"], orderId=tp_oid
+                )
+                lst = resp.get("result", {}).get("list", [])
+                order_status = lst[0].get("orderStatus") if lst else "NotFound"
+            except Exception as exc:
+                order_status = f"LookupFailed: {exc}"
+            stale.append({
+                "signal_id":      sig["id"],
+                "of_id":          sig["of_id"],
+                "symbol":         sig["symbol"],
+                "action":         sig["action"],
+                "quantity":       sig["quantity"],
+                "take_profit":    sig["take_profit"],
+                "pattern_type":   sig["pattern_type"],
+                "tp_order_id":    tp_oid,
+                "tp_order_status": order_status,
+            })
+        return stale
+
+    loop = asyncio.get_event_loop()
+    try:
+        stale = await loop.run_in_executor(None, _check)
+    except Exception as exc:
+        return {"error": str(exc), "stale": [], "count": 0}
+
+    return {"stale": stale, "count": len(stale)}
+
+
+class ClearStaleTpIn(BaseModel):
+    tp_order_id: str
+    symbol: str
+
+
+@router.post(
+    "/positions/coverage/{signal_id}/clear",
+    summary="Manual-only: clear a dead tp_order_id after re-confirming it's not resting or filled",
+)
+async def clear_stale_tp(signal_id: int, body: ClearStaleTpIn) -> Dict[str, Any]:
+    """The only write action this report offers, and it only clears a
+    bookkeeping reference — never cancels or places an order. Re-verifies
+    against Bybit itself before touching the DB, rather than trusting
+    whatever the report said a moment ago: refuses if the order is still
+    resting, and refuses (rather than silently clearing) if it actually
+    filled, since that's a completion to reconcile, not a stale reference
+    to drop."""
+    from exchanges.bybit import BybitExchange
+
+    def _verify_and_clear() -> Dict[str, Any]:
+        exchange = BybitExchange()
+        open_orders = exchange.get_all_open_orders(category="linear", settle_coin="USDT")
+        if any(o["orderId"] == body.tp_order_id for o in open_orders):
+            return {"cleared": False, "reason": "Order is still resting on Bybit — not stale."}
+
+        resp = exchange._client.get_order_history(
+            category="linear", symbol=body.symbol, orderId=body.tp_order_id
+        )
+        lst = resp.get("result", {}).get("list", [])
+        order_status = lst[0].get("orderStatus") if lst else "NotFound"
+
+        if order_status == "Filled":
+            return {
+                "cleared": False,
+                "reason": "This order actually filled on Bybit — it needs to be "
+                          "reconciled as a completion, not cleared as stale.",
+            }
+        if order_status not in ("Cancelled", "Rejected", "NotFound"):
+            return {
+                "cleared": False,
+                "reason": f"Order status is '{order_status}' — not a safe state to "
+                          "clear from, left untouched.",
+            }
+
+        cleared = clear_stale_tp_order_id_sync(signal_id, body.tp_order_id)
+        if not cleared:
+            return {
+                "cleared": False,
+                "reason": "No matching active signal with that tp_order_id — it may "
+                          "have already changed since the report was generated.",
+            }
+        return {"cleared": True}
+
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(None, _verify_and_clear)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+
+    return result
