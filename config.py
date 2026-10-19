@@ -32,6 +32,21 @@ class Settings(BaseSettings):
     NET_DELTA_CAP_SHADOW:  bool  = True    # True = log only, never refuse
     NET_DELTA_CACHE_SEC:   int   = 5       # seconds to cache position/order/equity snapshot
 
+    # Symbols the missing-TP checks (main.py's _fix_missing_tps, missing_tp.py)
+    # are allowed to look at — comma-separated (2026-10-19). Added after that
+    # mechanism was found scanning and logging about a user's own unrelated
+    # manual positions on other coins (ILV/WAL/BLUR) sharing the same Bybit
+    # account; this keeps it scoped to the bot's own actual trading pair(s).
+    FIX_TP_SYMBOLS: str = "LINKUSDT"
+
+    # Telegram credentials for main.py's own missing-TP notifications
+    # (2026-10-19) — separate from scripts/integrity_check.py's alerting,
+    # which runs as a standalone cron script reading /root/telegram_alert.env
+    # directly. This one runs inside the live app process, so it reads these
+    # the normal way (via .env), which must be set here too for it to send.
+    TELEGRAM_BOT_TOKEN: str = ""
+    TELEGRAM_CHAT_ID:   str = ""
+
     @property
     def active_exchange(self) -> str:
         return "bybit"

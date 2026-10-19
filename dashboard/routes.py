@@ -740,3 +740,56 @@ async def clear_stale_tp(signal_id: int, body: ClearStaleTpIn) -> Dict[str, Any]
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 
     return result
+
+
+# ── Missing-TP manual confirmation (2026-10-19) ───────────────────────────────
+#
+# main.py's _fix_missing_tps used to place a take-profit automatically the
+# moment it found an entry with none. Two real incidents (10-13 and 10-16)
+# happened when it placed a brand-new TP for an entry a human had ALREADY
+# closed by hand with an untagged order — the old check only looked for a
+# TAGGED closing order, which is structurally blind to anyone's own manual
+# close. Both filled instantly against unrelated trades, losing real money.
+# Placement is now manual-only: the 30s loop just notifies (Telegram), and
+# this is the one place that can actually place an order, re-verifying
+# everything fresh at the moment of confirmation — see missing_tp.py's
+# module docstring for the full history.
+
+@router.get(
+    "/missing-tps",
+    summary="Read-only: entries missing their own TP, safe to propose or needing manual handling",
+)
+async def missing_tps() -> Dict[str, Any]:
+    from exchanges.bybit import BybitExchange
+    from missing_tp import find_naked_entries
+
+    def _find() -> List[Dict[str, Any]]:
+        return find_naked_entries(BybitExchange())
+
+    loop = asyncio.get_event_loop()
+    try:
+        candidates = await loop.run_in_executor(None, _find)
+    except Exception as exc:
+        return {"error": str(exc), "candidates": [], "count": 0}
+
+    return {"candidates": candidates, "count": len(candidates)}
+
+
+@router.post(
+    "/missing-tps/{signal_id}/confirm",
+    summary="Manual-only: place this signal's TP, after re-verifying everything fresh",
+)
+async def confirm_missing_tp_route(signal_id: int) -> Dict[str, Any]:
+    from exchanges.bybit import BybitExchange
+    from missing_tp import confirm_missing_tp
+
+    def _confirm() -> Dict[str, Any]:
+        return confirm_missing_tp(BybitExchange(), signal_id)
+
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(None, _confirm)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+
+    return result

@@ -682,6 +682,24 @@ def get_signal_by_order_id_sync(order_id: str) -> Optional[dict]:
     }
 
 
+def get_signal_for_tp_confirm_sync(signal_id: int) -> Optional[dict]:
+    """Full row for missing_tp.py's confirm_missing_tp (2026-10-19) — the
+    one place that can actually place a TP now that _fix_missing_tps only
+    notifies. Keeps that module's DB access going through db.py like
+    everywhere else in the live app, instead of a second raw sqlite3
+    connection pattern of its own."""
+    with sqlite3.connect(settings.DB_PATH, timeout=5) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.execute(
+            """SELECT id, of_id, symbol, action, quantity, take_profit, tp_order_id,
+                      pattern_type, order_id, status, category
+                 FROM signals WHERE id = ?""",
+            (signal_id,),
+        )
+        row = cur.fetchone()
+    return dict(row) if row else None
+
+
 def original_of_id_known_sync(of_id: str) -> bool:
     """Return True if the DB contains any non-COUNTER signal with this of_id,
     regardless of status.  Used to distinguish history-replay counters (of_id

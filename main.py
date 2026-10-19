@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
 
 import uvicorn
 from fastapi import FastAPI
@@ -18,15 +16,14 @@ from db import (
     complete_signal_async,
     get_active_signals_no_tp,
     get_active_signals_with_tp,
-    get_signal_by_order_id_sync,
     init_db_sync,
-    mark_entry_filled_sync,
-    set_tp_order_id_sync,
     start_db_write_worker,
 )
-from exchanges.bybit import BybitExchange, build_order_link_id, is_closing_order
+from exchanges.bybit import BybitExchange, build_order_link_id
+from missing_tp import find_naked_entries, tracked_symbols
 from order_tracker import OrderTracker
 from routers.webhook import router as webhook_router
+from telegram_alerts import send_telegram
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,14 +34,11 @@ logger = logging.getLogger(__name__)
 
 tracker = OrderTracker(exchange=BybitExchange())
 
-# ── Reconciliation back-off state ──────────────────────────────────────────
-# Per-signal TP-placement failure counters. After _TP_MAX_FAILURES consecutive
-# reconciliation cycles fail to place a signal's TP, the signal is blacklisted
-# (never retried again this process's lifetime) and ONE critical log line is
-# emitted, instead of the same error repeating every 60 s forever.
-_tp_failure_counts: dict[int, int] = {}
-_tp_giveup: set[int] = set()
-_TP_MAX_FAILURES = 3
+# Signal ids already Telegram-notified for a missing TP, while the gap
+# persists — pruned back down to only currently-pending ids every cycle, so
+# a resolved one can notify again if it ever recurs. Prevents re-spamming
+# the same finding every 30 s (2026-10-19).
+_missing_tp_notified: set[int] = set()
 
 # Order IDs already warned about for "Cancelled/Rejected TP detected" below —
 # without this, the same cancelled order repeats the warning every cycle for
@@ -53,238 +47,89 @@ _TP_MAX_FAILURES = 3
 # say it, never what we do.
 _cancelled_tp_warned: set[str] = set()
 
-# Bybit's own stopOrderType values for a real stop-loss — used to exclude SL
-# orders from TP coverage. NOT triggerPrice presence: confirmed live
-# 2026-09-16 that Bybit's own auto-generated PartialTakeProfit orders also
-# carry a triggerPrice, so a triggerPrice-based filter wrongly excludes a
-# manually-placed TP from coverage too.
-_SL_STOP_ORDER_TYPES = {"StopLoss", "PartialStopLoss"}
-
-# Strips an order's role suffix off its orderLinkId to recover the of_id it
-# belongs to — e.g. "LINK-20261013-1500-0050m-S_TP" -> the part before "_TP".
-# Covers both the current closing roles (ETP/CTP/CLOSE) and the legacy ones
-# (TP/SL) still resting on the exchange from before the rename.
-_CLOSING_TAG_RE = re.compile(r"^(.*)_(?:ETP|CTP|CLOSE|TP|SL)\d*$")
-# Strips an ENTRY order's role suffix (_E for a plain entry, _CE for a
-# counter entry — NOT "_C", that was a real bug here until 2026-10-14: it
-# never matched "_CE" at all, since "_CE" doesn't end in "_C", so every
-# counter entry was silently invisible to this whole function) to recover
-# its of_id.
-_ENTRY_TAG_RE = re.compile(r"^(.*)_(?:CE|E)$")
-
-# History pagination depth per gap found — 6 pages of 50 is comfortably more
-# than a 30 s cycle could ever need to explain a newly-formed gap; it is not
-# meant to reach back for old, pre-tagging exposure (see function docstring).
-_HISTORY_PAGES = 6
-
-
-def _ms_to_local_iso(ms: str | int) -> str:
-    return (
-        datetime.fromtimestamp(int(ms) / 1000, tz=timezone.utc)
-        .astimezone(ZoneInfo(settings.TIMEZONE))
-        .replace(tzinfo=None)
-        .isoformat()
-    )
-
 
 async def _fix_missing_tps() -> None:
-    """Every 30 s, find entries with no take-profit and give each one its
-    own — confirmed directly against Bybit's own order tags, never a
-    combined/bulk order for leftover qty.
+    """Every 30 s, find entries that genuinely still need their own TP and
+    tell a human about it — never places anything itself (changed
+    2026-10-19, after two real incidents where automatic placement here hit
+    an entry a human had already closed by hand with an untagged order, and
+    placed a redundant TP that filled instantly against unrelated trades,
+    costing real money — see missing_tp.py's module docstring for the full
+    history of both incidents).
 
-    Replaces the old reconciler (removed 2026-10-14), which fell back to one
-    averaged-price "ghost" TP for any qty it couldn't match to a DB row.
-    That was wrong on two counts, both hit live: (1) its coverage count
-    excluded any order with a triggerPrice, which wrongly excludes Bybit's
-    own PartialTakeProfit orders too, so a manually-placed TP wasn't counted
-    and a duplicate got placed alongside it; (2) even after that was fixed,
-    collapsing several distinct signals into one bulk order throws away the
-    one thing that makes each of them individually auditable — its own tag.
-    Every entry this system places already carries a unique tag
-    (<of_id>_E or _C); the fix is to use it, not guess with an average.
+    find_naked_entries (missing_tp.py) does the actual detection — scoped to
+    settings.FIX_TP_SYMBOLS only (previously this scanned every symbol with
+    an open position on the account, including a user's own unrelated
+    manual trades on other coins), and checked against Bybit's real
+    execution history, not just tagged orders, so an untagged manual close
+    is caught too. Anything where the price has already passed the TP level
+    is flagged as needing manual handling rather than offered for a normal
+    confirm — a resting limit order there would just fill instantly as a
+    market order.
 
-    For each naked position qty:
-      1. Compute coverage the same correct way as before — real resting
-         closing orders, excluding only genuine stop-losses.
-      2. If a gap exists, pull recent order history and find every FILLED
-         entry whose tag has no matching take-profit anywhere (open or in
-         history) — this is checked directly against Bybit, not the local
-         database, since the database is exactly what can fall behind (a
-         missed WebSocket event around a connection drop).
-      3. For each one, look up its own recorded take-profit price by its own
-         entry order_id and place a TP at exactly that price and that
-         entry's own filled qty, tagged to match.
-      4. An entry with no tag, or a tag with no matching database record
-         (pre-dates the tagging system), is left alone and logged — never
-         guessed, never folded into an average.
+    Each signal is only Telegram-notified ONCE while the gap persists
+    (_missing_tp_notified) — not re-spammed every 30 s. The notification
+    points at POST /dashboard/missing-tps/{id}/confirm, which re-verifies
+    everything fresh at the moment of confirmation rather than trusting
+    anything this loop found a moment — or a Telegram message — ago.
     """
     exchange = BybitExchange()
     while True:
         await asyncio.sleep(30)
         try:
-            positions = exchange.get_positions(category="linear", settle_coin="USDT")
-            active = [p for p in positions if float(p.get("size", 0)) > 0]
-            if not active:
-                continue
+            candidates = find_naked_entries(exchange)
+            current_ids = {c["signal_id"] for c in candidates}
+            _missing_tp_notified.intersection_update(current_ids)
 
-            open_orders = exchange.get_all_open_orders(category="linear", settle_coin="USDT")
-
-            for pos in active:
-                symbol       = pos["symbol"]
-                pos_side     = pos["side"]
-                size         = float(pos["size"])
-                position_idx = 1 if pos_side == "Buy" else 2
-                tp_side      = "Sell" if pos_side == "Buy" else "Buy"
-
-                # Every close-type order counts as coverage — TakeProfit,
-                # PartialTakeProfit, and plain reduce-only limit TPs alike.
-                # Only a genuine stop-loss is excluded.
-                covered_qty = sum(
-                    float(o.get("qty", 0))
-                    for o in open_orders
-                    if o.get("symbol") == symbol
-                    and o.get("side") == tp_side
-                    and o.get("positionIdx") == position_idx
-                    and not str(o.get("orderLinkId", "")).endswith("_SL")
-                    and o.get("stopOrderType") not in _SL_STOP_ORDER_TYPES
-                )
-                naked_qty = round(size - covered_qty, 3)
-                if naked_qty <= 0:
+            for c in candidates:
+                sig_id = c["signal_id"]
+                if sig_id in _missing_tp_notified:
                     continue
+                _missing_tp_notified.add(sig_id)
 
-                logger.info(
-                    "Fix-TP: naked position symbol=%s side=%s size=%s covered=%s naked=%s",
-                    symbol, pos_side, size, covered_qty, naked_qty,
-                )
-
-                # A gap exists — find exactly which tagged entries explain it,
-                # straight from Bybit's own order history (not the DB).
-                history: list[dict] = []
-                cursor = ""
-                for _ in range(_HISTORY_PAGES):
-                    params = {"category": "linear", "symbol": symbol, "limit": 50}
-                    if cursor:
-                        params["cursor"] = cursor
-                    resp = exchange._client.get_order_history(**params)
-                    result = resp.get("result", {})
-                    history.extend(result.get("list", []))
-                    cursor = result.get("nextPageCursor", "")
-                    if not cursor:
-                        break
-
-                tp_of_ids: set[str] = set()
-                for o in open_orders + history:
-                    if is_closing_order(o) and o.get("orderLinkId"):
-                        m = _CLOSING_TAG_RE.match(o["orderLinkId"])
-                        if m:
-                            tp_of_ids.add(m.group(1))
-
-                entries = [
-                    o for o in history
-                    if o.get("side") == pos_side
-                    and o.get("positionIdx") == position_idx
-                    and o.get("orderStatus") == "Filled"
-                    and not o.get("reduceOnly")
-                ]
-
-                seen: set[str] = set()
-                for o in entries:
-                    if naked_qty <= 0:
-                        break
-
-                    m = _ENTRY_TAG_RE.match(o.get("orderLinkId") or "")
-                    if not m:
-                        continue  # untagged / pre-dates tagging — never guessed
-                    of_id = m.group(1)
-                    if of_id in seen or of_id in tp_of_ids:
-                        continue
-                    seen.add(of_id)
-
-                    entry_order_id = o.get("orderId", "")
-                    row = get_signal_by_order_id_sync(entry_order_id)
-                    if row is None or row.get("take_profit") is None:
-                        logger.info(
-                            "Fix-TP: of_id=%s entry_order_id=%s has no TP and no "
-                            "database record with a take_profit price — left alone, "
-                            "not guessed.",
-                            of_id, entry_order_id,
-                        )
-                        continue
-
-                    sig_id = row["id"]
-                    if sig_id in _tp_giveup:
-                        continue
-
-                    tp_price = float(row["take_profit"])
-                    category = row.get("category", "linear")
-                    fill_qty = exchange.round_qty(float(o.get("qty", 0)), symbol, category)
-                    if fill_qty <= 0:
-                        continue
-                    if fill_qty * tp_price < 5.0:
-                        logger.info(
-                            "Fix-TP: skip sig_id=%s of_id=%s notional=%.4f below 5 USDT",
-                            sig_id, of_id, fill_qty * tp_price,
-                        )
-                        continue
-
-                    logger.info(
-                        "Fix-TP: placing individual TP sig_id=%s of_id=%s symbol=%s "
-                        "side=%s qty=%s price=%s",
-                        sig_id, of_id, symbol, tp_side, fill_qty, tp_price,
+                if c["needs_manual_handling"]:
+                    logger.warning(
+                        "Fix-TP: sig_id=%s of_id=%s symbol=%s needs a TP but price has "
+                        "already passed %s — cannot auto-propose, needs manual handling "
+                        "on Bybit directly.",
+                        sig_id, c["of_id"], c["symbol"], c["price"],
                     )
-                    try:
-                        result = exchange.place_tp_order(
-                            symbol=symbol,
-                            side=tp_side,
-                            qty=fill_qty,
-                            price=tp_price,
-                            position_idx=position_idx,
-                            category=category,
-                            order_link_id_base=build_order_link_id(of_id, "TP"),
-                        )
-                        tp_order_id = result.get("order_id", "")
-                        if not tp_order_id:
-                            raise RuntimeError(f"no order_id in place_tp_order result: {result}")
+                    send_telegram(
+                        f"⚠️ {c['symbol']} sig_id={sig_id} of_id={c['of_id']} needs "
+                        f"a take-profit but price has already passed {c['price']} "
+                        f"(side={c['side']} qty={c['qty']}). A normal limit TP would fill "
+                        f"instantly here — this needs manual handling on Bybit, not a "
+                        f"confirm."
+                    )
+                else:
+                    logger.info(
+                        "Fix-TP: missing TP sig_id=%s of_id=%s symbol=%s side=%s qty=%s "
+                        "price=%s — awaiting manual confirmation.",
+                        sig_id, c["of_id"], c["symbol"], c["side"], c["qty"], c["price"],
+                    )
+                    send_telegram(
+                        f"\U0001f514 Missing TP — sig_id={sig_id} of_id={c['of_id']}\n"
+                        f"{c['symbol']} side={c['side']} qty={c['qty']} price={c['price']}\n"
+                        f"Confirm: POST /dashboard/missing-tps/{sig_id}/confirm"
+                    )
+        except Exception as exc:
+            logger.error("Fix-TP loop error: %s", exc)
 
-                        # Catch the row up to the same state order_tracker would
-                        # have left it in had the fill event not been missed.
-                        updated_ms = o.get("updatedTime")
-                        if updated_ms:
-                            mark_entry_filled_sync(entry_order_id, _ms_to_local_iso(updated_ms))
-                        set_tp_order_id_sync(entry_order_id, tp_order_id)
-
-                        _tp_failure_counts.pop(sig_id, None)
-                        logger.info(
-                            "Fix-TP: TP placed sig_id=%s of_id=%s tp_id=%s symbol=%s",
-                            sig_id, of_id, tp_order_id, symbol,
-                        )
-                        naked_qty = round(naked_qty - fill_qty, 8)
-                    except Exception as exc:
-                        fail_count = _tp_failure_counts.get(sig_id, 0) + 1
-                        _tp_failure_counts[sig_id] = fail_count
-                        if fail_count >= _TP_MAX_FAILURES:
-                            _tp_giveup.add(sig_id)
-                            logger.critical(
-                                "Fix-TP: GIVING UP on sig_id=%s of_id=%s symbol=%s after %d "
-                                "consecutive failed TP placements — will not retry again "
-                                "this run. MANUAL INTERVENTION REQUIRED. Last error: %s",
-                                sig_id, of_id, symbol, fail_count, exc,
-                            )
-                        else:
-                            logger.error(
-                                "Fix-TP: failed TP for sig_id=%s of_id=%s symbol=%s "
-                                "(attempt %d/%d): %s",
-                                sig_id, of_id, symbol, fail_count, _TP_MAX_FAILURES, exc,
-                            )
-
-            # Only check for cancelled TPs when positions are still open — avoids
-            # repeated warnings for stale entries that linger in order history.
-            # Read-only — this only logs a warning, it never places or cancels
-            # anything itself. Each order_id warns at most once per process
-            # lifetime (_cancelled_tp_warned) — previously this repeated every
-            # cycle for as long as the same cancelled order stayed within the
+        try:
+            # Only check for cancelled TPs when tracked-symbol positions are
+            # still open — avoids repeated warnings for stale entries that
+            # linger in order history. Read-only — this only logs a
+            # warning, it never places or cancels anything itself. Each
+            # order_id warns at most once per process lifetime
+            # (_cancelled_tp_warned) — previously this repeated every cycle
+            # for as long as the same cancelled order stayed within the
             # last-50 window, reported as log spam on 2026-10-14.
-            active_symbols = {pos["symbol"] for pos in active}
+            positions = exchange.get_positions(category="linear", settle_coin="USDT")
+            tracked = tracked_symbols()
+            active_symbols = {
+                p["symbol"] for p in positions
+                if float(p.get("size", 0)) > 0 and p.get("symbol") in tracked
+            }
             if active_symbols:
                 history = exchange.get_order_history(category="linear", settle_coin="USDT", limit=50)
                 for o in history:
@@ -298,9 +143,8 @@ async def _fix_missing_tps() -> None:
                             "Fix-TP: %s TP detected symbol=%s order_id=%s",
                             o["orderStatus"], o["symbol"], o.get("orderId"),
                         )
-
         except Exception as exc:
-            logger.error("Fix-TP loop error: %s", exc)
+            logger.error("Fix-TP cancelled-check error: %s", exc)
 
 
 async def reconcile_db_with_executions() -> int:
