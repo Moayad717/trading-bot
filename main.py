@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -33,6 +34,14 @@ logger = logging.getLogger(__name__)
 
 
 tracker = OrderTracker(exchange=BybitExchange())
+
+# Which bot this process is (2026-10-25) — all 3 running bots now post to the
+# SAME Telegram group, and the first week of real alerts showed messages with
+# no way to tell which one fired: same convention integrity_check.py already
+# uses (its own cwd's directory name — "trading-bot-8003" etc, set by pm2's
+# own working directory for each bot), so alerts from both mechanisms use the
+# same name for the same bot.
+_BOT_NAME = os.path.basename(os.getcwd())
 
 # Signal ids already Telegram-notified for a missing TP, while the gap
 # persists — pruned back down to only currently-pending ids every cycle, so
@@ -95,8 +104,8 @@ async def _fix_missing_tps() -> None:
                         sig_id, c["of_id"], c["symbol"], c["price"],
                     )
                     send_telegram(
-                        f"⚠️ {c['symbol']} sig_id={sig_id} of_id={c['of_id']} needs "
-                        f"a take-profit but price has already passed {c['price']} "
+                        f"⚠️ [{_BOT_NAME}] {c['symbol']} sig_id={sig_id} of_id={c['of_id']} "
+                        f"needs a take-profit but price has already passed {c['price']} "
                         f"(side={c['side']} qty={c['qty']}). A normal limit TP would fill "
                         f"instantly here — this needs manual handling on Bybit, not a "
                         f"confirm."
@@ -108,9 +117,9 @@ async def _fix_missing_tps() -> None:
                         sig_id, c["of_id"], c["symbol"], c["side"], c["qty"], c["price"],
                     )
                     send_telegram(
-                        f"\U0001f514 Missing TP — sig_id={sig_id} of_id={c['of_id']}\n"
+                        f"\U0001f514 [{_BOT_NAME}] Missing TP — sig_id={sig_id} of_id={c['of_id']}\n"
                         f"{c['symbol']} side={c['side']} qty={c['qty']} price={c['price']}\n"
-                        f"Confirm: POST /dashboard/missing-tps/{sig_id}/confirm"
+                        f"Confirm (on {_BOT_NAME}): POST /dashboard/missing-tps/{sig_id}/confirm"
                     )
         except Exception as exc:
             logger.error("Fix-TP loop error: %s", exc)
